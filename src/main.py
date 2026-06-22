@@ -17,7 +17,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram.request import HTTPXRequest
 from telegram.error import TelegramError
 from src.config import Config
-from src import database, agent, tools
+from src import database, agent, tools, quiz_helper
 
 # Enable logging to console and rotating file
 log_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -881,6 +881,118 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML"
         )
 
+    # 9. Quiz Operations
+    elif data.startswith("quiz_start:"):
+        session_id = int(data.split(":")[1])
+        logger.info(f"Quiz starting for session ID {session_id}")
+        await query.answer("퀴즈를 불러오고 있습니다...")
+        
+        session_data = database.get_quiz_session(session_id)
+        if not session_data:
+            await query.message.reply_text("❌ <b>유효하지 않은 퀴즈 세션입니다.</b>", parse_mode="HTML")
+            return
+            
+        await render_quiz_question(query, session_id, 0, session_data)
+        
+    elif data.startswith("quiz_ans:"):
+        parts = data.split(":")
+        session_id = int(parts[1])
+        choice = int(parts[2])
+        
+        session_data = database.get_quiz_session(session_id)
+        if not session_data or session_data["status"] == "completed":
+            await query.answer("이미 완료되었거나 유효하지 않은 퀴즈입니다.")
+            return
+            
+        questions = json.loads(session_data["questions_json"])
+        curr_idx = session_data["current_index"]
+        score = session_data["score"]
+        
+        if curr_idx >= len(questions):
+            await query.answer("이미 모든 문제를 푸셨습니다.")
+            return
+            
+        q = questions[curr_idx]
+        correct = q["correct_option"]
+        is_correct = (choice == correct)
+        
+        new_score = score + 1 if is_correct else score
+        option_letters = ["A", "B", "C", "D"]
+        result_icon = "✅ <b>정답입니다!</b>" if is_correct else f"❌ <b>오답입니다.</b> (정답: <b>{option_letters[correct]}</b>)"
+        
+        text = (
+            f"📖 <b>[{html.escape(session_data['title'])}] 퀴즈 채점</b>\n\n"
+            f"<b>Q {curr_idx+1}. {html.escape(q['question'])}</b>\n"
+            f"선택한 답안: {option_letters[choice]}. {html.escape(q['options'][choice])}\n\n"
+            f"{result_icon}\n\n"
+            f"💡 <b>해설:</b> {html.escape(q['explanation'])}"
+        )
+        
+        next_idx = curr_idx + 1
+        if next_idx < len(questions):
+            btn_text = f"➡️ Q {next_idx+1} 풀기"
+            callback_data = f"quiz_next:{session_id}"
+        else:
+            btn_text = "📊 결과 보기"
+            callback_data = f"quiz_result:{session_id}"
+            
+        database.update_quiz_session(session_id, next_idx, new_score, "active")
+        
+        keyboard = [[InlineKeyboardButton(btn_text, callback_data=callback_data)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await send_safe_message(
+            query=query,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+        
+    elif data.startswith("quiz_next:"):
+        parts = data.split(":")
+        session_id = int(parts[1])
+        session_data = database.get_quiz_session(session_id)
+        if not session_data:
+            await query.message.reply_text("❌ 유효하지 않은 퀴즈 세션입니다.")
+            return
+        await render_quiz_question(query, session_id, session_data["current_index"], session_data)
+        
+    elif data.startswith("quiz_result:"):
+        parts = data.split(":")
+        session_id = int(parts[1])
+        session_data = database.get_quiz_session(session_id)
+        if not session_data:
+            await query.message.reply_text("❌ 유효하지 않은 퀴즈 세션입니다.")
+            return
+            
+        await render_quiz_result(query, session_id, session_data)
+        
+    elif data == "quiz_history":
+        logger.info(f"Callback quiz_history for chat {chat_id}")
+        completed = database.get_completed_quizzes(chat_id, limit=5)
+        if not completed:
+            text = "📖 <b>완료한 퀴즈 이력이 없습니다.</b>\n\n링크를 전송해 복습 퀴즈를 풀어보세요!"
+        else:
+            text_lines = ["📖 <b>최근 퀴즈 학습 완료 이력 (최대 5건):</b>\n"]
+            for idx, q in enumerate(completed, start=1):
+                title_esc = html.escape(q['title'])
+                try:
+                    total_q = len(json.loads(q['questions_json']))
+                except Exception:
+                    total_q = 3
+                text_lines.append(f"• <b>{idx}. {title_esc}</b>\n  성적: <code>{q['score']}/{total_q}</code> ({q['created_at'][:10]})")
+            text = "\n".join(text_lines)
+            
+        keyboard = [[InlineKeyboardButton("⚙️ 설정 탭 이동", callback_data="refresh_settings")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await send_safe_message(
+            query=query,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+
 async def handle_google_auth_required(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     """Generates OAuth URL, starts redirect server, and sends login button to user."""
     from src import google_auth
@@ -980,11 +1092,17 @@ async def render_settings_ui(chat_id: int, update: Update = None, query = None, 
     expenses = database.get_expenses(chat_id, start_date, end_date)
     total_spent = sum(item['amount'] for item in expenses) if expenses else 0
     
+    # Get quiz stats
+    quiz_stats = database.get_completed_quiz_stats(chat_id)
+    total_quizzes = quiz_stats["total_quizzes"]
+    avg_rate = quiz_stats["avg_rate"]
+    
     text = (
         "⚙️ <b>개인 비서 AI 에이전트 설정</b>\n\n"
         f"👤 <b>구글 계정 연동 상태:</b> {google_status}\n"
         f"📅 <b>등록된 D-Day:</b> <code>{ddays_count}개</code>\n"
-        f"📊 <b>이번 달 누적 지출액:</b> <code>{total_spent:,}원</code>\n\n"
+        f"📊 <b>이번 달 누적 지출액:</b> <code>{total_spent:,}원</code>\n"
+        f"📖 <b>퀴즈 학습 이력:</b> <code>{total_quizzes}회 완료 (평균 정답률: {avg_rate:.1f}%)</code>\n\n"
         f"⏰ <b>일일 브리핑 설정:</b>\n"
         f"  • 브리핑 시간: <code>{briefing_time}</code>\n"
         f"  • 날씨 지역: <code>{location}</code>\n\n"
@@ -1018,6 +1136,11 @@ async def render_settings_ui(chat_id: int, update: Update = None, query = None, 
     keyboard.append([
         InlineKeyboardButton("📊 소비 분석", callback_data="expense_stat"),
         InlineKeyboardButton("🔄 설정 갱신", callback_data="refresh_settings")
+    ])
+    
+    # Row 5: Quiz History
+    keyboard.append([
+        InlineKeyboardButton("📖 퀴즈 이력 조회", callback_data="quiz_history")
     ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1181,6 +1304,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info(f"=== Text Message Received from Chat {chat_id} ===")
     logger.info(f"Text: '{user_text}'")
     
+    # 1.0 Detect YouTube or web link URL
+    if user_text:
+        import re
+        urls = re.findall(r'(https?://[^\s]+)', user_text)
+        if urls:
+            url = urls[0]
+            # Exclude manual localhost redirect callback URLs
+            if not (("localhost:8080" in url or "127.0.0.1:8080" in url) and "code=" in url):
+                logger.info(f"Detected content URL in chat {chat_id}: {url}")
+                await process_url_link(update, context, chat_id, url)
+                return
+                
     # 1.1 Intercept Google OAuth manual callback URLs
     if user_text and ("localhost:8080" in user_text or "127.0.0.1:8080" in user_text) and "code=" in user_text:
         logger.info(f"Detected Google OAuth redirect URL pasted in chat {chat_id}: {user_text}")
@@ -1425,6 +1560,142 @@ async def post_init(application: Application) -> None:
         logger.info("Successfully started Google Calendar background reminders scheduler.")
     except Exception as e:
         logger.error(f"Failed to start Google Calendar reminders scheduler: {e}", exc_info=True)
+
+async def render_quiz_question(query, session_id: int, index: int, session_data: dict = None):
+    """Helper to render a specific quiz question using inline keyboard buttons."""
+    if not session_data:
+        session_data = database.get_quiz_session(session_id)
+    if not session_data:
+        await query.message.reply_text("❌ 유효하지 않은 퀴즈 세션입니다.")
+        return
+        
+    questions = json.loads(session_data["questions_json"])
+    if index >= len(questions):
+        await render_quiz_result(query, session_id, session_data)
+        return
+        
+    q = questions[index]
+    title = session_data["title"]
+    
+    text_lines = [
+        f"📖 <b>[{html.escape(title)}] 복습 퀴즈</b>\n",
+        f"<b>Q {index+1}. {html.escape(q['question'])}</b>\n"
+    ]
+    
+    keyboard = []
+    option_letters = ["A", "B", "C", "D"]
+    for idx, opt in enumerate(q["options"]):
+        text_lines.append(f"<b>{option_letters[idx]}.</b> {html.escape(opt)}")
+        button = InlineKeyboardButton(text=option_letters[idx], callback_data=f"quiz_ans:{session_id}:{idx}")
+        keyboard.append(button)
+        
+    reply_markup = InlineKeyboardMarkup([keyboard])
+    
+    await send_safe_message(
+        query=query,
+        text="\n".join(text_lines),
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+async def render_quiz_result(query, session_id: int, session_data: dict = None):
+    """Helper to render the final results of a quiz."""
+    if not session_data:
+        session_data = database.get_quiz_session(session_id)
+    if not session_data:
+        return
+        
+    questions = json.loads(session_data["questions_json"])
+    total = len(questions)
+    score = session_data["score"]
+    
+    rate = (score / total) * 100 if total > 0 else 0
+    if rate == 100:
+        comment = "🎉 대단합니다! 완벽하게 이해하셨네요! 👍"
+    elif rate >= 60:
+        comment = "👏 훌륭합니다! 대부분의 핵심을 잘 짚어내셨어요."
+    else:
+        comment = "💡 좋은 시도였습니다! 다시 한번 학습해 보시는 것을 권장합니다."
+        
+    text = (
+        f"📊 <b>퀴즈 학습 결과 보고</b>\n\n"
+        f"📌 <b>제목:</b> {html.escape(session_data['title'])}\n"
+        f"🎯 <b>최종 점수:</b> <code>{score} / {total} 문제 정답</code> ({rate:.1f}%)\n\n"
+        f"{comment}\n\n"
+        f"⚙️ 퀴즈 요약 정보는 <b>비서 설정</b>(/settings)에서 누적 학습 통계로 확인하실 수 있습니다."
+    )
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("⚙️ 설정 보기", callback_data="refresh_settings"),
+            InlineKeyboardButton("📖 이력 조회", callback_data="quiz_history")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await send_safe_message(
+        query=query,
+        text=text,
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
+
+async def process_url_link(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, url: str):
+    """Helper to extract content from a URL, generate summary + quiz, and display start prompt."""
+    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    loading_msg = await update.message.reply_text("🔗 <b>링크를 감지했습니다. 본문을 분석하고 요약 및 퀴즈를 생성하는 중입니다...</b> ⏳", parse_mode="HTML")
+    
+    try:
+        if quiz_helper.is_youtube_url(url):
+            video_id = quiz_helper.extract_youtube_id(url)
+            if not video_id:
+                raise ValueError("유튜브 비디오 ID를 추출하지 못했습니다.")
+            res = await asyncio.get_running_loop().run_in_executor(None, quiz_helper.fetch_youtube_transcript, video_id)
+            title = res["title"]
+            content = res["content"]
+            is_fallback = res["is_fallback"]
+        else:
+            res = await asyncio.get_running_loop().run_in_executor(None, quiz_helper.fetch_web_article_text, url)
+            title = res["title"]
+            content = res["content"]
+            is_fallback = False
+            
+        if not content or not content.strip():
+            raise ValueError("본문 내용을 추출할 수 없습니다.")
+            
+        # Call Gemini model via agent helper
+        data = await asyncio.get_running_loop().run_in_executor(None, agent.generate_summary_and_quiz, title, content)
+        summary = data.get("summary", "")
+        questions = data.get("questions", [])
+        
+        if not questions:
+            raise ValueError("퀴즈 질문이 생성되지 않았습니다.")
+            
+        questions_json = json.dumps(questions, ensure_ascii=False)
+        session_id = database.create_quiz_session(chat_id, title, questions_json)
+        
+        fallback_notice = "\n\n⚠️ <i>(안내) 자막이 제공되지 않아 동영상 메타데이터와 웹 검색을 기반으로 퀴즈를 구성했습니다.</i>" if is_fallback else ""
+        text = (
+            f"📖 <b>콘텐츠 분석 및 요약 완료</b>\n\n"
+            f"📌 <b>제목:</b> {html.escape(title)}\n\n"
+            f"{summary}"
+            f"{fallback_notice}\n\n"
+            f"💡 <i>요약을 확인하셨다면 아래 [📖 퀴즈 시작] 버튼을 눌러 복습 퀴즈를 풀어보세요! (총 3문제)</i>"
+        )
+        
+        keyboard = [[InlineKeyboardButton("📖 퀴즈 시작", callback_data=f"quiz_start:{session_id}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await loading_msg.delete()
+        await send_safe_message(
+            update=update,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"Failed to process URL {url}: {e}", exc_info=True)
+        await loading_msg.edit_text(f"❌ 요약 및 퀴즈 생성에 실패했습니다: {str(e)}")
 
 def main() -> None:
     database.init_db()

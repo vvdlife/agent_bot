@@ -177,6 +177,19 @@ def init_db():
                     created_at TEXT NOT NULL
                 )
             """)
+            # Create quiz_sessions table for summarizing and quiz features
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS quiz_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    questions_json TEXT NOT NULL,
+                    current_index INTEGER NOT NULL DEFAULT 0,
+                    score INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL
+                )
+            """)
     finally:
         conn.close()
 
@@ -859,6 +872,108 @@ def get_pending_travel_plan(plan_id: int) -> dict:
         cursor.execute("SELECT * FROM pending_travel_plans WHERE id = ?", (plan_id,))
         row = cursor.fetchone()
         return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+# Quiz Session Operations
+def create_quiz_session(chat_id: int, title: str, questions_json: str) -> int:
+    created_at = datetime.now().isoformat()
+    conn = get_db_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            # Set any existing active sessions to 'completed' to avoid overlap
+            cursor.execute("UPDATE quiz_sessions SET status = 'completed' WHERE chat_id = ? AND status = 'active'", (chat_id,))
+            cursor.execute(
+                "INSERT INTO quiz_sessions (chat_id, title, questions_json, current_index, score, status, created_at) "
+                "VALUES (?, ?, ?, 0, 0, 'active', ?)",
+                (chat_id, title, questions_json, created_at)
+            )
+            return cursor.lastrowid
+    finally:
+        conn.close()
+
+def get_active_quiz_session(chat_id: int) -> dict:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM quiz_sessions WHERE chat_id = ? AND status = 'active' ORDER BY id DESC LIMIT 1", (chat_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+def get_quiz_session(session_id: int) -> dict:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM quiz_sessions WHERE id = ?", (session_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+def update_quiz_session(session_id: int, current_index: int, score: int, status: str) -> bool:
+    conn = get_db_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE quiz_sessions SET current_index = ?, score = ?, status = ? WHERE id = ?",
+                (current_index, score, status, session_id)
+            )
+            return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+def get_completed_quiz_stats(chat_id: int) -> dict:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT questions_json, score FROM quiz_sessions WHERE chat_id = ? AND status = 'completed'", (chat_id,))
+        rows = cursor.fetchall()
+        total_quizzes = len(rows)
+        total_score = sum(r['score'] for r in rows)
+        
+        import json
+        total_questions = 0
+        for r in rows:
+            try:
+                q_list = json.loads(r['questions_json'])
+                total_questions += len(q_list)
+            except Exception:
+                total_questions += 3
+                
+        avg_rate = (total_score / total_questions * 100) if total_questions > 0 else 0.0
+        return {
+            "total_quizzes": total_quizzes,
+            "total_score": total_score,
+            "total_questions": total_questions,
+            "avg_rate": avg_rate
+        }
+    finally:
+        conn.close()
+
+def get_completed_quizzes(chat_id: int, limit: int = 5) -> list:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM quiz_sessions WHERE chat_id = ? AND status = 'completed' ORDER BY id DESC LIMIT ?",
+            (chat_id, limit)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def delete_quiz_session(session_id: int) -> bool:
+    conn = get_db_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM quiz_sessions WHERE id = ?", (session_id,))
+            return cursor.rowcount > 0
     finally:
         conn.close()
 

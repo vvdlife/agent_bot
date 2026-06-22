@@ -480,3 +480,77 @@ async def filter_articles_by_category_or_keyword(articles: list[dict], target: s
         
     return articles
 
+def generate_summary_and_quiz(title: str, text: str) -> dict:
+    """
+    Given the content text, uses Gemini to generate a summary and 3 multiple-choice questions.
+    Returns a dictionary containing 'summary' and 'questions' list.
+    """
+    client = get_agent_client()
+    
+    prompt = (
+        f"당신은 개인 비서 에이전트의 교육/학습 지원 모듈입니다.\n"
+        f"아래 제공된 콘텐츠 본문(제목: {title})을 분석하여 다음 두 가지를 수행해 주세요:\n\n"
+        f"1. **핵심 요약 (HTML 형식)**:\n"
+        f"   - 내용을 3~5개의 핵심 요약 리스트(동그라미 기호 • 활용)로 정리해 주세요.\n"
+        f"   - 강조하고 싶은 단어는 <b>태그를 사용해 주세요.\n"
+        f"   - 마크다운 기호(예: **, *, _, ` 등)는 절대로 사용하지 마세요. 오직 HTML 서식 태그(<b>, <i>, <code>)만 사용 가능합니다.\n"
+        f"   - <ul>, <li>, <ol>, <br>, <p>, <div> 태그는 절대 사용하지 마세요. 줄바꿈은 실제 줄바꿈 문자(엔터)를 사용하세요.\n"
+        f"   - 요약문 맨 앞에는 '☀️ <b>[핵심 요약]</b>'과 같은 헤더를 달어주세요.\n\n"
+        f"2. **객관식 퀴즈 (3문항)**:\n"
+        f"   - 콘텐츠 본문의 핵심 내용 및 사실에 기반한 객관식 사지선다형(보기 4개) 퀴즈 3문제를 만들어 주세요.\n"
+        f"   - 문제는 학습 및 복습을 돕는 유익하고 직관적인 내용이어야 합니다.\n"
+        f"   - 각 문제에 대해 정답 번호(0, 1, 2, 3 중 하나)와 1~2문장의 친절한 정답 해설(explanation)을 포함해 주세요.\n\n"
+        f"출력은 반드시 다른 텍스트 설명 없이 순수 JSON 문자열 형식이어야 하며, 루트에 'summary'와 'questions' 키를 가져야 합니다.\n"
+        f"JSON 마크다운 기호(```json)를 사용하지 말고 순수 JSON 문자열만 리턴하세요.\n\n"
+        f"JSON 스키마 예시:\n"
+        f"{{\n"
+        f"  \"summary\": \"(HTML 서식의 요약문 내용)\",\n"
+        f"  \"questions\": [\n"
+        f"    {{\n"
+        f"      \"question\": \"1번 문제 내용?\",\n"
+        f"      \"options\": [\"보기A\", \"보기B\", \"보기C\", \"보기D\"],\n"
+        f"      \"correct_option\": 0,\n"
+        f"      \"explanation\": \"1번 문제 해설 내용...\"\n"
+        f"    }}\n"
+        f"  ]\n"
+        f"}}\n\n"
+        f"콘텐츠 본문:\n"
+        f"{text}"
+    )
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=prompt
+        )
+        
+        ai_res_text = response.text.strip()
+        if ai_res_text.startswith("```"):
+            lines = ai_res_text.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines[-1].strip() == "```":
+                lines = lines[:-1]
+            ai_res_text = "\n".join(lines).strip()
+            
+        result = json.loads(ai_res_text)
+        # Ensure we have the required keys
+        if "summary" not in result or "questions" not in result:
+            raise KeyError("Missing required keys in AI response JSON.")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to generate summary and quiz: {e}", exc_info=True)
+        # Fallback dictionary
+        return {
+            "summary": f"☀️ <b>[요약]</b>\n• {title} 콘텐츠 분석 중 오류가 발생하여 요약본을 제공하지 못했습니다.",
+            "questions": [
+                {
+                    "question": f"'{title}' 동영상/아티클에 대해 이해하셨나요?",
+                    "options": ["네, 이해했습니다", "아니오, 어렵네요", "다시 읽어볼래요", "잘 모르겠습니다"],
+                    "correct_option": 0,
+                    "explanation": "콘텐츠에 관심을 가져주셔서 감사합니다! 복습을 완료해 주세요."
+                }
+            ]
+        }
+
+
