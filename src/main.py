@@ -896,7 +896,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("❌ <b>유효하지 않은 퀴즈 세션입니다.</b>", parse_mode="HTML")
             return
             
-        await render_quiz_question(query, session_id, 0, session_data)
+        await render_quiz_question(query, session_id, 0, session_data, as_new_message=True)
         
     elif data.startswith("quiz_ans:"):
         parts = data.split(":")
@@ -1568,12 +1568,13 @@ async def post_init(application: Application) -> None:
     except Exception as e:
         logger.error(f"Failed to start Google Calendar reminders scheduler: {e}", exc_info=True)
 
-async def render_quiz_question(query, session_id: int, index: int, session_data: dict = None):
+async def render_quiz_question(query, session_id: int, index: int, session_data: dict = None, as_new_message: bool = False):
     """Helper to render a specific quiz question using inline keyboard buttons."""
     if not session_data:
         session_data = database.get_quiz_session(session_id)
     if not session_data:
-        await query.message.reply_text("❌ 유효하지 않은 퀴즈 세션입니다.")
+        if query and query.message:
+            await query.message.reply_text("❌ 유효하지 않은 퀴즈 세션입니다.")
         return
         
     questions = json.loads(session_data["questions_json"])
@@ -1598,12 +1599,21 @@ async def render_quiz_question(query, session_id: int, index: int, session_data:
         
     reply_markup = InlineKeyboardMarkup([keyboard])
     
-    await send_safe_message(
-        query=query,
-        text="\n".join(text_lines),
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
+    if as_new_message:
+        await send_safe_message(
+            chat_id=query.message.chat_id,
+            bot=query.bot,
+            text="\n".join(text_lines),
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+    else:
+        await send_safe_message(
+            query=query,
+            text="\n".join(text_lines),
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
 
 async def render_quiz_result(query, session_id: int, session_data: dict = None):
     """Helper to render the final results of a quiz."""
