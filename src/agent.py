@@ -482,7 +482,7 @@ async def filter_articles_by_category_or_keyword(articles: list[dict], target: s
 
 def generate_summary_and_quiz(title: str, text: str) -> dict:
     """
-    Given the content text, uses Gemini to generate a summary and 3 multiple-choice questions.
+    Given the content text, uses Gemini to generate a summary and 10 multiple-choice questions.
     Returns a dictionary containing 'summary' and 'questions' list.
     """
     client = get_agent_client()
@@ -496,8 +496,8 @@ def generate_summary_and_quiz(title: str, text: str) -> dict:
         f"   - 마크다운 기호(예: **, *, _, ` 등)는 절대로 사용하지 마세요. 오직 HTML 서식 태그(<b>, <i>, <code>)만 사용 가능합니다.\n"
         f"   - <ul>, <li>, <ol>, <br>, <p>, <div> 태그는 절대 사용하지 마세요. 줄바꿈은 실제 줄바꿈 문자(엔터)를 사용하세요.\n"
         f"   - 요약문 맨 앞에는 '☀️ <b>[핵심 요약]</b>'과 같은 헤더를 달어주세요.\n\n"
-        f"2. **객관식 퀴즈 (3문항)**:\n"
-        f"   - 콘텐츠 본문의 핵심 내용 및 사실에 기반한 객관식 사지선다형(보기 4개) 퀴즈 3문제를 만들어 주세요.\n"
+        f"2. **객관식 퀴즈 (10문항)**:\n"
+        f"   - 콘텐츠 본문의 핵심 내용 및 사실에 기반한 객관식 사지선다형(보기 4개) 퀴즈 10문제를 만들어 주세요.\n"
         f"   - 문제는 학습 및 복습을 돕는 유익하고 직관적인 내용이어야 합니다.\n"
         f"   - 각 문제에 대해 정답 번호(0, 1, 2, 3 중 하나)와 1~2문장의 친절한 정답 해설(explanation)을 포함해 주세요.\n\n"
         f"출력은 반드시 다른 텍스트 설명 없이 순수 JSON 문자열 형식이어야 하며, 루트에 'summary'와 'questions' 키를 가져야 합니다.\n"
@@ -552,5 +552,67 @@ def generate_summary_and_quiz(title: str, text: str) -> dict:
                 }
             ]
         }
+
+def generate_additional_quiz(title: str, text: str, existing_questions: list) -> list:
+    """
+    Given the content text and a list of existing questions,
+    uses Gemini to generate 10 NEW multiple-choice questions that do NOT overlap with existing ones.
+    Returns a list of dictionaries (questions).
+    """
+    client = get_agent_client()
+    
+    # Format existing questions for prompt context
+    formatted_existing = []
+    for idx, q in enumerate(existing_questions, start=1):
+        formatted_existing.append(f"문제 {idx}: {q['question']}")
+    existing_str = "\n".join(formatted_existing) if formatted_existing else "없음"
+    
+    prompt = (
+        f"당신은 개인 비서 에이전트의 교육/학습 지원 모듈입니다.\n"
+        f"제공된 콘텐츠 본문(제목: {title})을 바탕으로, 이미 학습한 기존 문제들과 **전혀 겹치지 않는 새로운 객관식 사지선다형(보기 4개) 퀴즈 10문제**를 생성해 주세요.\n\n"
+        f"### 기존에 이미 출제된 문제 목록 (이 문제들과 중복되거나 너무 유사한 내용은 출제하지 마세요):\n"
+        f"{existing_str}\n\n"
+        f"### 요구 사항:\n"
+        f"- 기존에 출제된 문제들과 다른 새로운 관점이나 세부 내용, 혹은 깊이 있는 주제를 다루어 주세요.\n"
+        f"- 10개의 문제를 생성해야 합니다.\n"
+        f"- 각 문제에 대해 정답 번호(0, 1, 2, 3 중 하나)와 1~2문장의 친절한 정답 해설(explanation)을 포함해 주세요.\n\n"
+        f"출력은 반드시 다른 설명 텍스트 없이 순수 JSON 배열 형식이어야 하며, 루트에 객체 형태 대신 배열형태의 문제 목록만 있어야 합니다.\n"
+        f"JSON 마크다운 기호(```json)를 사용하지 말고 순수 JSON 문자열만 리턴하세요.\n\n"
+        f"JSON 스키마 예시:\n"
+        f"[\n"
+        f"  {{\n"
+        f"    \"question\": \"새로운 문제 내용?\",\n"
+        f"    \"options\": [\"보기A\", \"보기B\", \"보기C\", \"보기D\"],\n"
+        f"    \"correct_option\": 1,\n"
+        f"    \"explanation\": \"새로운 문제 해설 내용...\"\n"
+        f"  }}\n"
+        f"]\n\n"
+        f"콘텐츠 본문:\n"
+        f"{text}"
+    )
+    
+    try:
+        response = client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=prompt
+        )
+        
+        ai_res_text = response.text.strip()
+        if ai_res_text.startswith("```"):
+            lines = ai_res_text.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines[-1].strip() == "```":
+                lines = lines[:-1]
+            ai_res_text = "\n".join(lines).strip()
+            
+        result = json.loads(ai_res_text)
+        if not isinstance(result, list):
+            raise TypeError("Expected a JSON list of questions from AI.")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to generate additional quiz: {e}", exc_info=True)
+        # Fallback empty list
+        return []
 
 

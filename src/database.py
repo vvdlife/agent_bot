@@ -184,12 +184,18 @@ def init_db():
                     chat_id INTEGER NOT NULL,
                     title TEXT NOT NULL,
                     questions_json TEXT NOT NULL,
+                    source_content TEXT,
                     current_index INTEGER NOT NULL DEFAULT 0,
                     score INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'active',
                     created_at TEXT NOT NULL
                 )
             """)
+            # Schema migration: Add source_content column to quiz_sessions if it doesn't exist
+            try:
+                cursor.execute("ALTER TABLE quiz_sessions ADD COLUMN source_content TEXT")
+            except sqlite3.OperationalError:
+                pass # Already exists
     finally:
         conn.close()
 
@@ -877,7 +883,7 @@ def get_pending_travel_plan(plan_id: int) -> dict:
 
 
 # Quiz Session Operations
-def create_quiz_session(chat_id: int, title: str, questions_json: str) -> int:
+def create_quiz_session(chat_id: int, title: str, questions_json: str, source_content: str = None) -> int:
     created_at = datetime.now().isoformat()
     conn = get_db_connection()
     try:
@@ -886,9 +892,9 @@ def create_quiz_session(chat_id: int, title: str, questions_json: str) -> int:
             # Set any existing active sessions to 'completed' to avoid overlap
             cursor.execute("UPDATE quiz_sessions SET status = 'completed' WHERE chat_id = ? AND status = 'active'", (chat_id,))
             cursor.execute(
-                "INSERT INTO quiz_sessions (chat_id, title, questions_json, current_index, score, status, created_at) "
-                "VALUES (?, ?, ?, 0, 0, 'active', ?)",
-                (chat_id, title, questions_json, created_at)
+                "INSERT INTO quiz_sessions (chat_id, title, questions_json, source_content, current_index, score, status, created_at) "
+                "VALUES (?, ?, ?, ?, 0, 0, 'active', ?)",
+                (chat_id, title, questions_json, source_content, created_at)
             )
             return cursor.lastrowid
     finally:
@@ -914,15 +920,21 @@ def get_quiz_session(session_id: int) -> dict:
     finally:
         conn.close()
 
-def update_quiz_session(session_id: int, current_index: int, score: int, status: str) -> bool:
+def update_quiz_session(session_id: int, current_index: int, score: int, status: str, questions_json: str = None) -> bool:
     conn = get_db_connection()
     try:
         with conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE quiz_sessions SET current_index = ?, score = ?, status = ? WHERE id = ?",
-                (current_index, score, status, session_id)
-            )
+            if questions_json is not None:
+                cursor.execute(
+                    "UPDATE quiz_sessions SET current_index = ?, score = ?, status = ?, questions_json = ? WHERE id = ?",
+                    (current_index, score, status, questions_json, session_id)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE quiz_sessions SET current_index = ?, score = ?, status = ? WHERE id = ?",
+                    (current_index, score, status, session_id)
+                )
             return cursor.rowcount > 0
     finally:
         conn.close()

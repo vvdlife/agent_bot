@@ -291,7 +291,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Answer callback query to remove loading spinner.
     # Some callbacks provide custom alerts/toasts, so we only answer here if not handled individually.
     data = query.data
-    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:"]
+    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:", "quiz_add_more:"]
     if not any(data.startswith(c) for c in custom_callbacks):
         await query.answer()
         
@@ -987,6 +987,50 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
         await render_quiz_result(query, context, session_id, session_data)
         
+    elif data.startswith("quiz_add_more:"):
+        parts = data.split(":")
+        session_id = int(parts[1])
+        logger.info(f"Adding 10 more questions for session ID {session_id}")
+        await query.answer("추가 퀴즈를 생성하고 있습니다. 잠시만 기다려 주세요... ⏳")
+        
+        session_data = database.get_quiz_session(session_id)
+        if not session_data:
+            await query.message.reply_text("❌ <b>유효하지 않은 퀴즈 세션입니다.</b>", parse_mode="HTML")
+            return
+            
+        source_content = session_data.get("source_content")
+        if not source_content or not source_content.strip():
+            await query.message.reply_text("❌ <b>원본 콘텐츠를 찾을 수 없어 추가 퀴즈 생성이 불가합니다.</b>", parse_mode="HTML")
+            return
+            
+        title = session_data["title"]
+        existing_questions = json.loads(session_data["questions_json"])
+        
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        
+        new_questions = await asyncio.get_running_loop().run_in_executor(
+            None, agent.generate_additional_quiz, title, source_content, existing_questions
+        )
+        
+        if not new_questions:
+            await query.message.reply_text("❌ <b>추가 퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.</b>", parse_mode="HTML")
+            return
+            
+        merged_questions = existing_questions + new_questions
+        merged_json = json.dumps(merged_questions, ensure_ascii=False)
+        
+        current_idx = len(existing_questions)
+        database.update_quiz_session(session_id, current_idx, session_data["score"], "active", merged_json)
+        
+        await query.message.reply_text(
+            f"🎯 <b>새로운 퀴즈 {len(new_questions)}문항 추가 완료!</b>\n"
+            f"이어서 문제를 풀어보세요. (현재 문제 번호: Q {current_idx+1})",
+            parse_mode="HTML"
+        )
+        
+        updated_session = database.get_quiz_session(session_id)
+        await render_quiz_question(query, context, session_id, current_idx, updated_session)
+        
     elif data == "quiz_history":
         logger.info(f"Callback quiz_history for chat {chat_id}")
         completed = database.get_completed_quizzes(chat_id, limit=5)
@@ -1649,6 +1693,9 @@ async def render_quiz_result(query, context, session_id: int, session_data: dict
     
     keyboard = [
         [
+            InlineKeyboardButton("➕ 10문제 추가 풀기", callback_data=f"quiz_add_more:{session_id}")
+        ],
+        [
             InlineKeyboardButton("⚙️ 설정 보기", callback_data="refresh_settings"),
             InlineKeyboardButton("📖 이력 조회", callback_data="quiz_history")
         ]
@@ -1695,7 +1742,7 @@ async def process_url_link(update: Update, context: ContextTypes.DEFAULT_TYPE, c
             raise ValueError("퀴즈 질문이 생성되지 않았습니다.")
             
         questions_json = json.dumps(questions, ensure_ascii=False)
-        session_id = database.create_quiz_session(chat_id, title, questions_json)
+        session_id = database.create_quiz_session(chat_id, title, questions_json, content)
         
         fallback_notice = "\n\n⚠️ <i>(안내) 자막이 제공되지 않아 동영상 메타데이터와 웹 검색을 기반으로 퀴즈를 구성했습니다.</i>" if is_fallback else ""
         text = (
@@ -1703,7 +1750,7 @@ async def process_url_link(update: Update, context: ContextTypes.DEFAULT_TYPE, c
             f"📌 <b>제목:</b> {html.escape(title)}\n\n"
             f"{summary}"
             f"{fallback_notice}\n\n"
-            f"💡 <i>요약을 확인하셨다면 아래 [📖 퀴즈 시작] 버튼을 눌러 복습 퀴즈를 풀어보세요! (총 3문제)</i>"
+            f"💡 <i>요약을 확인하셨다면 아래 [📖 퀴즈 시작] 버튼을 눌러 복습 퀴즈를 풀어보세요! (총 10문제)</i>"
         )
         
         keyboard = [[InlineKeyboardButton("📖 퀴즈 시작", callback_data=f"quiz_start:{session_id}")]]
