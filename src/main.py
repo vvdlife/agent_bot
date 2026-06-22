@@ -287,9 +287,14 @@ async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle task completion and list refreshing from inline buttons."""
     query = update.callback_query
-    await query.answer()
     
+    # Answer callback query to remove loading spinner.
+    # Some callbacks provide custom alerts/toasts, so we only answer here if not handled individually.
     data = query.data
+    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:"]
+    if not any(data.startswith(c) for c in custom_callbacks):
+        await query.answer()
+        
     chat_id = query.message.chat_id
     logger.info(f"=== Callback Query Received: '{data}' ===")
     
@@ -912,6 +917,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.answer("이미 모든 문제를 푸셨습니다.")
             return
             
+        # Answer to remove loading spinner for selection
+        await query.answer()
+        
         q = questions[curr_idx]
         correct = q["correct_option"]
         is_correct = (choice == correct)
