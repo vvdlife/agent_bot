@@ -1,0 +1,15 @@
+.venv
+__pycache__
+*.pyc
+*.db
+*.log
+.git
+.gitignore
+google_credentials.json
+agent.db
+data/
+temp/
+tests/
+scratch/
+toss_api.json
+src/assets/fonts/

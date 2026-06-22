@@ -1,0 +1,14 @@
+services:
+  bot:
+    build: .
+    container_name: personal_agent_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DATABASE_PATH=data/agent.db
+      - GOOGLE_CREDENTIALS_PATH=data/google_credentials.json
+    ports:
+      - "${GOOGLE_REDIRECT_PORT:-8080}:${GOOGLE_REDIRECT_PORT:-8080}"
+    volumes:
+      - ./data:/app/data

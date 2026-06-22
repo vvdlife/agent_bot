@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Configuration and Database (Sensitive files containing credentials/database)
+.env
+data/
+
+# Logs
+*.log
+
+# Temporary and Scratch files
+temp/
+scratch/
+toss_api.json
