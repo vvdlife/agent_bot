@@ -482,8 +482,9 @@ async def filter_articles_by_category_or_keyword(articles: list[dict], target: s
 
 def generate_summary_and_quiz(title: str, text: str) -> dict:
     """
-    Given the content text, uses Gemini to generate a summary and 10 multiple-choice questions.
-    Returns a dictionary containing 'summary' and 'questions' list.
+    제공된 콘텐츠 본문(텍스트)을 기반으로 Gemini AI를 사용하여
+    핵심 요약본(HTML 포맷) 및 최초 10개의 객관식 사지선다형 복습 퀴즈를 생성합니다.
+    출력 결과는 'summary'와 'questions' 키를 담은 딕셔너리 객체로 반환됩니다.
     """
     client = get_agent_client()
     
@@ -555,9 +556,9 @@ def generate_summary_and_quiz(title: str, text: str) -> dict:
 
 def generate_additional_quiz(title: str, text: str, existing_questions: list) -> list:
     """
-    Given the content text and a list of existing questions,
-    uses Gemini to generate 10 NEW multiple-choice questions that do NOT overlap with existing ones.
-    Returns a list of dictionaries (questions).
+    원본 본문 텍스트와 기존에 이미 출제되었던 문제 목록(existing_questions)을 전달받아,
+    Gemini AI에게 기존 문제들과 내용이나 개념이 중복되지 않는 새로운 10개의 퀴즈 문항을 추가 생성하도록 요청합니다.
+    출력 결과는 생성된 10개의 질문 딕셔너리를 담은 리스트 형태로 반환됩니다.
     """
     client = get_agent_client()
     

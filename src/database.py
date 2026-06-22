@@ -177,31 +177,31 @@ def init_db():
                     created_at TEXT NOT NULL
                 )
             """)
-            # Create quiz_sessions table for summarizing and quiz features
+            # 유튜브/아티클 요약본 및 복습 퀴즈 세션을 관리하는 quiz_sessions 테이블 생성
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS quiz_sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     chat_id INTEGER NOT NULL,
                     title TEXT NOT NULL,
-                    questions_json TEXT NOT NULL,
-                    source_content TEXT,
-                    current_index INTEGER NOT NULL DEFAULT 0,
-                    score INTEGER NOT NULL DEFAULT 0,
-                    is_current_failed INTEGER NOT NULL DEFAULT 0,
+                    questions_json TEXT NOT NULL, -- 퀴즈 질문 목록 데이터 (JSON 포맷)
+                    source_content TEXT,          -- 추가 퀴즈 생성을 위한 원본 본문 텍스트 보관
+                    current_index INTEGER NOT NULL DEFAULT 0, -- 사용자가 현재 풀어야 할 퀴즈의 인덱스 번호
+                    score INTEGER NOT NULL DEFAULT 0,          -- 첫 시도 정답 누적 점수
+                    is_current_failed INTEGER NOT NULL DEFAULT 0, -- 현재 풀고 있는 문제의 첫 오답 여부 (0: 안틀림, 1: 틀림)
                     status TEXT NOT NULL DEFAULT 'active',
                     created_at TEXT NOT NULL
                 )
             """)
-            # Schema migration: Add source_content column to quiz_sessions if it doesn't exist
+            # [스키마 마이그레이션] 기존 DB 사용자 호환성 유지: source_content 컬럼이 없는 경우 동적 추가
             try:
                 cursor.execute("ALTER TABLE quiz_sessions ADD COLUMN source_content TEXT")
             except sqlite3.OperationalError:
-                pass # Already exists
-            # Schema migration: Add is_current_failed column to quiz_sessions if it doesn't exist
+                pass # 이미 존재함
+            # [스키마 마이그레이션] 기존 DB 사용자 호환성 유지: is_current_failed 컬럼이 없는 경우 동적 추가
             try:
                 cursor.execute("ALTER TABLE quiz_sessions ADD COLUMN is_current_failed INTEGER NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
-                pass # Already exists
+                pass # 이미 존재함
     finally:
         conn.close()
 
@@ -888,15 +888,20 @@ def get_pending_travel_plan(plan_id: int) -> dict:
         conn.close()
 
 
-# Quiz Session Operations
+# 퀴즈 세션 관련 데이터베이스 처리 함수 목록
 def create_quiz_session(chat_id: int, title: str, questions_json: str, source_content: str = None) -> int:
+    """
+    새로운 퀴즈 세션을 데이터베이스에 생성합니다.
+    기존에 존재하던 해당 채팅방의 활성화('active')된 다른 세션들은 중복 방지를 위해 모두 'completed'로 처리합니다.
+    """
     created_at = datetime.now().isoformat()
     conn = get_db_connection()
     try:
         with conn:
             cursor = conn.cursor()
-            # Set any existing active sessions to 'completed' to avoid overlap
+            # 1. 기존의 활성화된 다른 퀴즈 세션 강제 완료 처리
             cursor.execute("UPDATE quiz_sessions SET status = 'completed' WHERE chat_id = ? AND status = 'active'", (chat_id,))
+            # 2. 새로운 세션 정보 INSERT (최초 점수: 0, 최초 인덱스: 0, 오답 상태: 0)
             cursor.execute(
                 "INSERT INTO quiz_sessions (chat_id, title, questions_json, source_content, current_index, score, is_current_failed, status, created_at) "
                 "VALUES (?, ?, ?, ?, 0, 0, 0, 'active', ?)",
@@ -907,6 +912,7 @@ def create_quiz_session(chat_id: int, title: str, questions_json: str, source_co
         conn.close()
 
 def get_active_quiz_session(chat_id: int) -> dict:
+    """채팅방 내에서 현재 활성화 상태('active')인 최신 퀴즈 세션 데이터를 가져옵니다."""
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -917,6 +923,7 @@ def get_active_quiz_session(chat_id: int) -> dict:
         conn.close()
 
 def get_quiz_session(session_id: int) -> dict:
+    """세션 ID에 해당하는 특정 퀴즈 세션의 전체 데이터를 가져옵니다."""
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
@@ -927,6 +934,11 @@ def get_quiz_session(session_id: int) -> dict:
         conn.close()
 
 def update_quiz_session(session_id: int, current_index: int, score: int, status: str, questions_json: str = None, is_current_failed: int = None) -> bool:
+    """
+    진행 중인 퀴즈 세션 정보를 갱신합니다.
+    - index, score, status 필드는 고정 업데이트
+    - questions_json (문제 추가 시), is_current_failed (오답 감지 시) 필드는 제공되었을 때만 동적으로 업데이트 쿼리에 빌드
+    """
     conn = get_db_connection()
     try:
         with conn:
@@ -934,10 +946,12 @@ def update_quiz_session(session_id: int, current_index: int, score: int, status:
             query = "UPDATE quiz_sessions SET current_index = ?, score = ?, status = ?"
             params = [current_index, score, status]
             
+            # 동적으로 문제 목록(JSON) 업데이트 적용
             if questions_json is not None:
                 query += ", questions_json = ?"
                 params.append(questions_json)
                 
+            # 동적으로 오답 시도 이력 필드 업데이트 적용
             if is_current_failed is not None:
                 query += ", is_current_failed = ?"
                 params.append(is_current_failed)

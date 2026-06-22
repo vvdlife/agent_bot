@@ -926,9 +926,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         option_letters = ["A", "B", "C", "D"]
         
         if is_correct:
-            # Point is only awarded if they haven't failed this question yet
+            # [점수 산정 규칙] 첫 시도에 맞춘 경우에만 점수(score)를 1점 부여합니다.
+            # 이전에 한 번이라도 틀렸었다면(is_current_failed == 1) 성적에 반영하지 않고 기존 점수를 유지합니다.
             new_score = score + 1 if is_current_failed == 0 else score
             next_idx = curr_idx + 1
+            
+            # 다음 문제로 넘어가므로 DB에 다음 문제 인덱스를 저장하고, 재시도 오답 여부(is_current_failed)는 다시 0으로 초기화합니다.
             database.update_quiz_session(session_id, next_idx, new_score, "active", is_current_failed=0)
             
             text = (
@@ -939,6 +942,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"💡 <b>해설:</b> {html.escape(q['explanation'])}"
             )
             
+            # 다음 풀 수 있는 문제가 남아있다면 '다음 문제 풀기' 버튼을, 다 풀었다면 '결과 보기' 버튼을 제공합니다.
             if next_idx < len(questions):
                 btn_text = f"➡️ Q {next_idx+1} 풀기"
                 callback_data = f"quiz_next:{session_id}"
@@ -949,7 +953,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             keyboard = [[InlineKeyboardButton(btn_text, callback_data=callback_data)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
         else:
-            # Mark that user failed this question to prevent points
+            # [오답 처리 규칙] 틀린 경우 점수나 인덱스는 그대로 두고, 오답 이력(is_current_failed = 1)만 표시하여 DB에 저장합니다.
             database.update_quiz_session(session_id, curr_idx, score, "active", is_current_failed=1)
             
             text = (
@@ -959,6 +963,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"❌ <b>오답입니다.</b> 다른 답을 다시 선택해 보세요!\n"
             )
             
+            # 정답을 맞출 때까지 동일한 문제의 보기 버튼 A, B, C, D를 다시 보여줍니다.
             keyboard = []
             for idx, opt in enumerate(q["options"]):
                 button = InlineKeyboardButton(text=option_letters[idx], callback_data=f"quiz_ans:{session_id}:{idx}")
@@ -993,6 +998,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await render_quiz_result(query, context, session_id, session_data)
         
     elif data.startswith("quiz_add_more:"):
+        # [추가 퀴즈 생성 콜백] 사용자가 완료 후 10문제 추가 풀기를 눌렀을 때 실행됩니다.
         parts = data.split(":")
         session_id = int(parts[1])
         logger.info(f"Adding 10 more questions for session ID {session_id}")
@@ -1003,6 +1009,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("❌ <b>유효하지 않은 퀴즈 세션입니다.</b>", parse_mode="HTML")
             return
             
+        # 데이터베이스에 백업해 두었던 원본 분석 본문 텍스트를 불러옵니다.
         source_content = session_data.get("source_content")
         if not source_content or not source_content.strip():
             await query.message.reply_text("❌ <b>원본 콘텐츠를 찾을 수 없어 추가 퀴즈 생성이 불가합니다.</b>", parse_mode="HTML")
@@ -1011,8 +1018,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         title = session_data["title"]
         existing_questions = json.loads(session_data["questions_json"])
         
+        # 텔레그램 채팅창에 '입력 중(typing)' 상태를 표시하여 AI 생성 지연 대기 인지를 돕습니다.
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
         
+        # Gemini AI를 호출하여 기존에 출제된 문제 리스트와 겹치지 않는 새로운 10문제를 비동기로 생성합니다.
         new_questions = await asyncio.get_running_loop().run_in_executor(
             None, agent.generate_additional_quiz, title, source_content, existing_questions
         )
@@ -1021,9 +1030,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("❌ <b>추가 퀴즈 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.</b>", parse_mode="HTML")
             return
             
+        # 기존 질문 리스트의 끝에 새로 만들어진 질문 목록을 합칩니다 (Append)
         merged_questions = existing_questions + new_questions
         merged_json = json.dumps(merged_questions, ensure_ascii=False)
         
+        # 퀴즈 인덱스는 기존 문제의 개수(예: 10개였다면 인덱스 10 즉 11번째 문제)를 가리키게 하고,
+        # 세션 상태를 다시 'active'로 변경하며, 문제 목록 JSON을 덮어쓰고, 재시도 오답 여부(is_current_failed)는 0으로 리셋하여 갱신합니다.
         current_idx = len(existing_questions)
         database.update_quiz_session(session_id, current_idx, session_data["score"], "active", merged_json, is_current_failed=0)
         
@@ -1033,6 +1045,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML"
         )
         
+        # 갱신된 데이터를 기반으로 사용자에게 새로 생긴 첫 번째 문제(Q 11)를 출제합니다.
         updated_session = database.get_quiz_session(session_id)
         await render_quiz_question(query, context, session_id, current_idx, updated_session)
         
