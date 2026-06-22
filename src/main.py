@@ -294,7 +294,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Answer callback query to remove loading spinner.
     # Some callbacks provide custom alerts/toasts, so we only answer here if not handled individually.
     data = query.data
-    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:", "quiz_add_more:", "quiz_review_start", "quiz_review_more:"]
+    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:", "quiz_add_more:", "quiz_review_start", "quiz_review_more:", "quiz_review_run:"]
     if not any(data.startswith(c) for c in custom_callbacks):
         await query.answer()
         
@@ -937,8 +937,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             new_score = score + 1 if is_current_failed == 0 else score
             next_idx = curr_idx + 1
             
-            # [오답 복습 처리] 만약 현재 진행 중인 세션이 '오답 노트 복습' 모드라면, 정답을 맞춘 문제를 오답 노출 리스트에서 제거합니다.
-            if session_data["title"] == "오답 노트 복습":
+            # [오답 복습 처리] 만약 현재 진행 중인 세션이 '오답 노트 복습' 또는 특정 출처별 복습 모드라면, 정답을 맞춘 문제를 오답 노출 리스트에서 제거합니다.
+            if session_data["title"] == "오답 노트 복습" or session_data["title"].startswith("오답 복습:"):
                 database.remove_incorrect_note_by_text(chat_id, q["question"])
             
             # 다음 문제로 넘어가므로 DB에 다음 문제 인덱스를 저장하고, 재시도 오답 여부(is_current_failed)는 다시 0으로 초기화합니다.
@@ -1081,23 +1081,81 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await render_quiz_question(query, context, session_id, current_idx, updated_session)
         
     elif data == "quiz_review_start":
-        # [오답 복습 시작 콜백] 사용자가 설정화면 등에서 '오답 복습' 버튼을 눌렀을 때 실행됩니다.
+        # [오답 복습 시작 콜백] 사용자가 설정화면이나 브리핑에서 '오답 복습' 버튼을 눌렀을 때 실행됩니다.
         logger.info(f"Callback quiz_review_start for chat {chat_id}")
         
-        # 1. 현재 데이터베이스에 등록된 사용자의 오답 개수를 가져옵니다.
+        # 1. 현재 데이터베이스에 등록된 사용자의 총 오답 개수를 가져옵니다.
         incorrect_count = database.get_incorrect_notes_count(chat_id)
         if incorrect_count == 0:
             # 오답이 없는 경우, 텔레그램 상단에 '틀린 문제가 없습니다!' 알림을 띄우고 리턴합니다.
             await query.answer("틀린 문제가 없습니다! 👏", show_alert=True)
             return
             
-        # 2. 로딩 스피너를 제거하고 사용자에게 준비 알림을 띄웁니다.
-        await query.answer("오답 노트를 바탕으로 복습 퀴즈를 생성하고 있습니다... ⏳")
+        await query.answer("오답 목록을 조회하고 있습니다...")
         
-        # 3. 데이터베이스에서 틀린 횟수가 높은 가중치 위주로 최대 5개의 오답 문항을 임의 추출합니다.
-        notes = database.get_incorrect_notes_for_review(chat_id, limit=5)
+        # 2. 오답 노트 데이터베이스에서 고유 출처 타이틀 목록을 가져옵니다.
+        titles_info = database.get_incorrect_notes_titles(chat_id)
         
-        # 4. 추출된 오답 데이터를 퀴즈 세션용 질문 JSON 구조로 매핑하여 빌드합니다.
+        # 3. 사용자에게 복습할 출처를 선택할 수 있게 인라인 키보드 버튼을 동적으로 생성합니다.
+        keyboard = [
+            [InlineKeyboardButton("📚 전체 오답 종합 복습", callback_data="quiz_review_run:all")]
+        ]
+        
+        # 대표적인 오답 출처들 중 최근 추가된 순으로 최대 4개 노출
+        for item in titles_info[:4]:
+            raw_title = item['title']
+            # 인라인 버튼 내 제목이 지나치게 길면 레이아웃이 깨지므로 최대 15자 자르기
+            disp_title = raw_title[:15] + "..." if len(raw_title) > 15 else raw_title
+            btn_text = f"📖 {disp_title} ({item['cnt']}개)"
+            keyboard.append([
+                InlineKeyboardButton(btn_text, callback_data=f"quiz_review_run:id:{item['title_id']}")
+            ])
+            
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # 4. [비파괴 UI 정책] 기존 설정을 유지한 채 새 메시지로 출처 선택 팝업 카드를 보냅니다.
+        text = (
+            "❌ <b>틀린 문제 오답 복습</b> ✍️\n\n"
+            f"현재 보관된 오답 문제는 총 <b>{incorrect_count}개</b>입니다.\n"
+            "복습하고 싶으신 동영상/아티클 출처를 선택해 주세요. 특정 출처만 집중 복습하거나 전체를 종합적으로 복습할 수 있습니다."
+        )
+        
+        await send_safe_message(
+            chat_id=chat_id,
+            bot=context.bot,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+        
+    elif data.startswith("quiz_review_run:"):
+        # [오답 복습 실행 콜백] 사용자가 출처 목록 중 하나를 선택했을 때 실행됩니다.
+        parts = data.split(":")
+        target = parts[1]
+        logger.info(f"Callback quiz_review_run target={target} for chat {chat_id}")
+        
+        # 1. 대상 출처 제목(title)과 퀴즈 세션 타이틀을 설정합니다.
+        title = None
+        session_title = "오답 노트 복습"
+        
+        if target == "id":
+            title_id = int(parts[2])
+            title = database.get_incorrect_note_title_by_id(title_id)
+            if not title:
+                await query.answer("유효하지 않은 오답 정보입니다.", show_alert=True)
+                return
+            # 세션 타이틀에 출처 제목을 기재하되, 전체 64자 안팎으로 자르기
+            session_title = f"오답 복습: {title}"
+            
+        await query.answer("복습 퀴즈를 생성하고 있습니다... ⏳")
+        
+        # 2. 지정된 출처(title) 필터에 부합하는 오답 문항들을 최대 5개 임의 추출합니다.
+        notes = database.get_incorrect_notes_for_review(chat_id, limit=5, title=title)
+        if not notes:
+            await query.message.reply_text("❌ 복습할 수 있는 오답 문항이 존재하지 않습니다.")
+            return
+            
+        # 3. 추출된 데이터를 퀴즈용 질문 형식으로 빌드합니다.
         review_questions = []
         for n in notes:
             try:
@@ -1113,10 +1171,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
         review_questions_json = json.dumps(review_questions, ensure_ascii=False)
         
-        # 5. 타이틀을 '오답 노트 복습'으로 지정하고, 원본 source_content가 없으므로 None으로 전달하여 복습 세션을 생성합니다.
-        session_id = database.create_quiz_session(chat_id, "오답 노트 복습", review_questions_json, None)
+        # 4. '오답 복습' 퀴즈 세션을 새롭게 개설합니다. (source_content는 없으므로 None)
+        session_id = database.create_quiz_session(chat_id, session_title, review_questions_json, None)
         
-        # 6. 새로 생성된 복습 세션 데이터를 조회한 뒤 첫 번째 오답(Q 1) 문제를 화면에 렌더링합니다.
+        # 5. 첫 번째 오답(Q 1) 문항을 출제합니다.
         session_data = database.get_quiz_session(session_id)
         await render_quiz_question(query, context, session_id, 0, session_data)
         
@@ -1135,8 +1193,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # 기존 복습 세션에 등록된 질문 내용 텍스트들을 추출하여 중복 추출 대상에서 배제합니다.
         exclude_texts = [q["question"] for q in existing_questions]
         
-        # 1. 겹치지 않는 추가 오답 5문항을 데이터베이스에서 가져옵니다.
-        new_notes = database.get_incorrect_notes_for_review(chat_id, limit=5, exclude_questions=exclude_texts)
+        # 세션 타이틀로부터 출처별 필터(title)가 존재하는지 확인합니다.
+        title = None
+        if session_data["title"].startswith("오답 복습: "):
+            title = session_data["title"].replace("오답 복습: ", "")
+            
+        # 1. 겹치지 않는 추가 오답 5문항을 데이터베이스에서 가져옵니다. (기존 출처 필터 유지)
+        new_notes = database.get_incorrect_notes_for_review(chat_id, limit=5, exclude_questions=exclude_texts, title=title)
         if not new_notes:
             await query.answer("남아있는 새로운 오답이 없습니다! 🎉", show_alert=True)
             return
@@ -1845,11 +1908,22 @@ async def render_quiz_result(query, context, session_id: int, session_data: dict
     remaining_incorrect_count = database.get_incorrect_notes_count(chat_id)
     
     # 2. 복습 세션과 일반 퀴즈 세션에 따라 결과 화면의 추가 풀기 선택지 버튼을 차별화합니다.
-    if session_data["title"] == "오답 노트 복습":
-        # 오답 복습 모드에서 아직 오답이 남아있다면, 추가 오답 복습 버튼을 노출합니다.
-        if remaining_incorrect_count > 0:
+    #    (전체 오답 복습이거나 특정 출처별 오답 복습인 경우 모두 복습 연장 버튼 노출 대상입니다.)
+    if session_data["title"] == "오답 노트 복습" or session_data["title"].startswith("오답 복습:"):
+        # [출처별 추가 복습 연동] 현재 복습 세션의 특정 출처 필터가 있는 경우, 해당 필터가 적용된 남은 오답 개수만 추출해서 버튼에 표시합니다.
+        title = None
+        if session_data["title"].startswith("오답 복습: "):
+            title = session_data["title"].replace("오답 복습: ", "")
+            
+        # 해당 출처에 남은 오답 개수 확인 (종합 복습인 경우는 전체 남은 개수)
+        # 이미 풀고 세션에 올라가 있는 오답 텍스트들은 겹치지 않게 배제하고, 해당 출처 필터의 남은 오답 개수를 계산합니다.
+        exclude_texts = [q["question"] for q in questions]
+        remaining_filtered_notes = database.get_incorrect_notes_for_review(chat_id, limit=999, exclude_questions=exclude_texts, title=title)
+        remaining_count_disp = len(remaining_filtered_notes)
+        
+        if remaining_count_disp > 0:
             row_buttons = [
-                InlineKeyboardButton(f"➕ 추가 복습 ({remaining_incorrect_count}개 남음)", callback_data=f"quiz_review_more:{session_id}")
+                InlineKeyboardButton(f"➕ 추가 복습 ({remaining_count_disp}개 남음)", callback_data=f"quiz_review_more:{session_id}")
             ]
         else:
             row_buttons = []

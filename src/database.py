@@ -1052,17 +1052,22 @@ def add_or_increment_incorrect_note(chat_id: int, title: str, question_text: str
     finally:
         conn.close()
 
-def get_incorrect_notes_for_review(chat_id: int, limit: int = 5, exclude_questions: list = None) -> list:
+def get_incorrect_notes_for_review(chat_id: int, limit: int = 5, exclude_questions: list = None, title: str = None) -> list:
     """
     사용자가 틀린 문제들 중 복습할 5(limit)개의 문항을 추출합니다.
     틀린 횟수(wrong_count)가 많은 순으로 가중치를 두고, 그 중 무작위 요소로 추출하도록 쿼리를 설계했습니다.
-    제외할 질문 내용 목록(exclude_questions)이 있으면 이를 쿼리에서 배제하여 중복 추출을 방지합니다.
+    제외할 질문 내용 목록(exclude_questions)이 있으면 이를 쿼리에서 배제하고, 특정 출처 타이틀(title)이 지정되면 해당 출처만 필터링합니다.
     """
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
         query = "SELECT * FROM quiz_incorrect_notes WHERE chat_id = ?"
         params = [chat_id]
+        
+        # [타겟 복습 정책] 특정 출처 타이틀이 지정된 경우 필터 조건 추가
+        if title:
+            query += " AND title = ?"
+            params.append(title)
         
         # 중복 추출 방지 적용
         if exclude_questions:
@@ -1082,6 +1087,36 @@ def get_incorrect_notes_for_review(chat_id: int, limit: int = 5, exclude_questio
         
         cursor.execute(final_query, tuple(params))
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def get_incorrect_notes_titles(chat_id: int) -> list:
+    """
+    사용자가 틀린 문제들의 고유 출처 타이틀 목록과 각 출처별 오답 개수, 대표 ID(min_id)를 조회합니다.
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        # 최근 등록된 순(created_at 최대값 기준)으로 고유 타이틀 리스트를 가져옵니다.
+        cursor.execute("""
+            SELECT MIN(id) as title_id, title, COUNT(*) as cnt 
+            FROM quiz_incorrect_notes 
+            WHERE chat_id = ? 
+            GROUP BY title 
+            ORDER BY MAX(created_at) DESC
+        """, (chat_id,))
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def get_incorrect_note_title_by_id(note_id: int) -> str:
+    """오답 ID에 해당하는 출처 타이틀(title)을 조회합니다."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT title FROM quiz_incorrect_notes WHERE id = ?", (note_id,))
+        row = cursor.fetchone()
+        return row['title'] if row else None
     finally:
         conn.close()
 
