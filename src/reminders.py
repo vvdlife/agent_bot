@@ -528,6 +528,17 @@ async def check_and_send_briefings(application):
                 logger.error(f"Failed to fetch monthly expenses for briefing: {ee}")
                 expense_text = "지출 정보를 불러오는 도중 오류가 발생했습니다."
                 
+            # --- 6.5 오답 복습 현황 조회 ---
+            incorrect_text = "보관된 오답 문제가 없습니다. 👍"
+            incorrect_count = 0
+            try:
+                incorrect_count = database.get_incorrect_notes_count(chat_id)
+                if incorrect_count > 0:
+                    incorrect_text = f"현재 복습해야 할 오답 문제가 <b>{incorrect_count}개</b> 있습니다. 틀린 문제를 다시 확인해 보세요!"
+            except Exception as ee:
+                logger.error(f"Failed to fetch incorrect notes count for briefing: {ee}")
+                incorrect_text = "오답 정보를 불러오는 도중 오류가 발생했습니다."
+                
             # --- 7. HTML 브리핑 메시지 템플릿 조립 ---
             text = (
                 f"☀️ <b>[오늘의 아침 브리핑]</b>\n"
@@ -543,7 +554,9 @@ async def check_and_send_briefings(application):
                 f"📰 <b>오늘의 주요 뉴스</b>\n"
                 f"{news_text}\n\n"
                 f"💸 <b>이번 달 누적 지출</b>\n"
-                f"{expense_text}"
+                f"{expense_text}\n\n"
+                f"❌ <b>오답 복습 현황</b>\n"
+                f"{incorrect_text}"
             )
             
             # --- 8. 브리핑 발송 및 완료 기록 ---
@@ -557,6 +570,12 @@ async def check_and_send_briefings(application):
                 # 가로 2열 배치 청크 분할
                 keyboard = [row[i:i + 2] for i in range(0, len(row), 2)]
             
+            # [오답 복습 연동] 오답이 존재할 경우 복습 시작 단축 버튼을 키보드 최하단에 신설합니다.
+            if incorrect_count > 0:
+                keyboard.append([
+                    InlineKeyboardButton(text=f"❌ 오답 복습 바로가기 ({incorrect_count}개)", callback_data="quiz_review_start")
+                ])
+                
             reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
             
             await send_safe_message(
