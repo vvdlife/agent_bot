@@ -922,31 +922,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         q = questions[curr_idx]
         correct = q["correct_option"]
         is_correct = (choice == correct)
-        
-        new_score = score + 1 if is_correct else score
         option_letters = ["A", "B", "C", "D"]
-        result_icon = "✅ <b>정답입니다!</b>" if is_correct else f"❌ <b>오답입니다.</b> (정답: <b>{option_letters[correct]}</b>)"
         
-        text = (
-            f"📖 <b>[{html.escape(session_data['title'])}] 퀴즈 채점</b>\n\n"
-            f"<b>Q {curr_idx+1}. {html.escape(q['question'])}</b>\n"
-            f"선택한 답안: {option_letters[choice]}. {html.escape(q['options'][choice])}\n\n"
-            f"{result_icon}\n\n"
-            f"💡 <b>해설:</b> {html.escape(q['explanation'])}"
-        )
-        
-        next_idx = curr_idx + 1
-        if next_idx < len(questions):
-            btn_text = f"➡️ Q {next_idx+1} 풀기"
-            callback_data = f"quiz_next:{session_id}"
-        else:
-            btn_text = "📊 결과 보기"
-            callback_data = f"quiz_result:{session_id}"
+        if is_correct:
+            new_score = score + 1
+            next_idx = curr_idx + 1
+            database.update_quiz_session(session_id, next_idx, new_score, "active")
             
-        database.update_quiz_session(session_id, next_idx, new_score, "active")
-        
-        keyboard = [[InlineKeyboardButton(btn_text, callback_data=callback_data)]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            text = (
+                f"📖 <b>[{html.escape(session_data['title'])}] 퀴즈 채점</b>\n\n"
+                f"<b>Q {curr_idx+1}. {html.escape(q['question'])}</b>\n"
+                f"선택한 답안: {option_letters[choice]}. {html.escape(q['options'][choice])}\n\n"
+                f"✅ <b>정답입니다!</b>\n\n"
+                f"💡 <b>해설:</b> {html.escape(q['explanation'])}"
+            )
+            
+            if next_idx < len(questions):
+                btn_text = f"➡️ Q {next_idx+1} 풀기"
+                callback_data = f"quiz_next:{session_id}"
+            else:
+                btn_text = "📊 결과 보기"
+                callback_data = f"quiz_result:{session_id}"
+                
+            keyboard = [[InlineKeyboardButton(btn_text, callback_data=callback_data)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+        else:
+            text = (
+                f"📖 <b>[{html.escape(session_data['title'])}] 복습 퀴즈</b>\n\n"
+                f"<b>Q {curr_idx+1}. {html.escape(q['question'])}</b>\n"
+                f"선택한 답안: {option_letters[choice]}. {html.escape(q['options'][choice])}\n\n"
+                f"❌ <b>오답입니다.</b> 다른 답을 다시 선택해 보세요!\n"
+            )
+            
+            keyboard = []
+            for idx, opt in enumerate(q["options"]):
+                button = InlineKeyboardButton(text=option_letters[idx], callback_data=f"quiz_ans:{session_id}:{idx}")
+                keyboard.append(button)
+            reply_markup = InlineKeyboardMarkup([keyboard])
         
         await send_safe_message(
             chat_id=query.message.chat_id,
