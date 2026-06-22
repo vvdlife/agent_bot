@@ -187,6 +187,7 @@ def init_db():
                     source_content TEXT,
                     current_index INTEGER NOT NULL DEFAULT 0,
                     score INTEGER NOT NULL DEFAULT 0,
+                    is_current_failed INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'active',
                     created_at TEXT NOT NULL
                 )
@@ -194,6 +195,11 @@ def init_db():
             # Schema migration: Add source_content column to quiz_sessions if it doesn't exist
             try:
                 cursor.execute("ALTER TABLE quiz_sessions ADD COLUMN source_content TEXT")
+            except sqlite3.OperationalError:
+                pass # Already exists
+            # Schema migration: Add is_current_failed column to quiz_sessions if it doesn't exist
+            try:
+                cursor.execute("ALTER TABLE quiz_sessions ADD COLUMN is_current_failed INTEGER NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
                 pass # Already exists
     finally:
@@ -892,8 +898,8 @@ def create_quiz_session(chat_id: int, title: str, questions_json: str, source_co
             # Set any existing active sessions to 'completed' to avoid overlap
             cursor.execute("UPDATE quiz_sessions SET status = 'completed' WHERE chat_id = ? AND status = 'active'", (chat_id,))
             cursor.execute(
-                "INSERT INTO quiz_sessions (chat_id, title, questions_json, source_content, current_index, score, status, created_at) "
-                "VALUES (?, ?, ?, ?, 0, 0, 'active', ?)",
+                "INSERT INTO quiz_sessions (chat_id, title, questions_json, source_content, current_index, score, is_current_failed, status, created_at) "
+                "VALUES (?, ?, ?, ?, 0, 0, 0, 'active', ?)",
                 (chat_id, title, questions_json, source_content, created_at)
             )
             return cursor.lastrowid
@@ -920,21 +926,26 @@ def get_quiz_session(session_id: int) -> dict:
     finally:
         conn.close()
 
-def update_quiz_session(session_id: int, current_index: int, score: int, status: str, questions_json: str = None) -> bool:
+def update_quiz_session(session_id: int, current_index: int, score: int, status: str, questions_json: str = None, is_current_failed: int = None) -> bool:
     conn = get_db_connection()
     try:
         with conn:
             cursor = conn.cursor()
+            query = "UPDATE quiz_sessions SET current_index = ?, score = ?, status = ?"
+            params = [current_index, score, status]
+            
             if questions_json is not None:
-                cursor.execute(
-                    "UPDATE quiz_sessions SET current_index = ?, score = ?, status = ?, questions_json = ? WHERE id = ?",
-                    (current_index, score, status, questions_json, session_id)
-                )
-            else:
-                cursor.execute(
-                    "UPDATE quiz_sessions SET current_index = ?, score = ?, status = ? WHERE id = ?",
-                    (current_index, score, status, session_id)
-                )
+                query += ", questions_json = ?"
+                params.append(questions_json)
+                
+            if is_current_failed is not None:
+                query += ", is_current_failed = ?"
+                params.append(is_current_failed)
+                
+            query += " WHERE id = ?"
+            params.append(session_id)
+            
+            cursor.execute(query, tuple(params))
             return cursor.rowcount > 0
     finally:
         conn.close()

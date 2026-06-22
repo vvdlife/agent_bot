@@ -911,6 +911,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         questions = json.loads(session_data["questions_json"])
         curr_idx = session_data["current_index"]
         score = session_data["score"]
+        is_current_failed = session_data.get("is_current_failed", 0)
         
         if curr_idx >= len(questions):
             await query.answer("이미 모든 문제를 푸셨습니다.")
@@ -925,9 +926,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         option_letters = ["A", "B", "C", "D"]
         
         if is_correct:
-            new_score = score + 1
+            # Point is only awarded if they haven't failed this question yet
+            new_score = score + 1 if is_current_failed == 0 else score
             next_idx = curr_idx + 1
-            database.update_quiz_session(session_id, next_idx, new_score, "active")
+            database.update_quiz_session(session_id, next_idx, new_score, "active", is_current_failed=0)
             
             text = (
                 f"📖 <b>[{html.escape(session_data['title'])}] 퀴즈 채점</b>\n\n"
@@ -947,6 +949,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             keyboard = [[InlineKeyboardButton(btn_text, callback_data=callback_data)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
         else:
+            # Mark that user failed this question to prevent points
+            database.update_quiz_session(session_id, curr_idx, score, "active", is_current_failed=1)
+            
             text = (
                 f"📖 <b>[{html.escape(session_data['title'])}] 복습 퀴즈</b>\n\n"
                 f"<b>Q {curr_idx+1}. {html.escape(q['question'])}</b>\n"
@@ -1020,7 +1025,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         merged_json = json.dumps(merged_questions, ensure_ascii=False)
         
         current_idx = len(existing_questions)
-        database.update_quiz_session(session_id, current_idx, session_data["score"], "active", merged_json)
+        database.update_quiz_session(session_id, current_idx, session_data["score"], "active", merged_json, is_current_failed=0)
         
         await query.message.reply_text(
             f"🎯 <b>새로운 퀴즈 {len(new_questions)}문항 추가 완료!</b>\n"
