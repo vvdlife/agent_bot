@@ -938,6 +938,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             # 다음 문제로 넘어가므로 DB에 다음 문제 인덱스를 저장하고, 재시도 오답 여부(is_current_failed)는 다시 0으로 초기화합니다.
             database.update_quiz_session(session_id, next_idx, new_score, "active", is_current_failed=0)
             
+            # 정답 해설 메시지 작성 (사용자가 정답 확인을 즉시 할 수 있도록 버튼 없이 메시지만 보냅니다.)
             text = (
                 f"📖 <b>[{html.escape(session_data['title'])}] 퀴즈 채점</b>\n\n"
                 f"<b>Q {curr_idx+1}. {html.escape(q['question'])}</b>\n"
@@ -946,16 +947,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"💡 <b>해설:</b> {html.escape(q['explanation'])}"
             )
             
-            # 다음 풀 수 있는 문제가 남아있다면 '다음 문제 풀기' 버튼을, 다 풀었다면 '결과 보기' 버튼을 제공합니다.
+            await send_safe_message(
+                chat_id=query.message.chat_id,
+                bot=context.bot,
+                text=text,
+                reply_markup=None,
+                parse_mode="HTML"
+            )
+            
+            # DB가 업데이트되었으므로 세션 정보를 최신 상태로 새로 조회해옵니다.
+            updated_session = database.get_quiz_session(session_id)
+            
+            # [곧바로 다음 문제 출력 / 10번째 결과 화면 전환 처리]
+            # 다음 문제가 남아있다면, 별도 '풀기' 버튼 없이 곧바로 다음 문제 화면을 출력합니다.
+            # 10번째(혹은 마지막) 문제라면 곧바로 결과 화면(추가 풀기를 물어보는 버튼 탑재)을 출력합니다.
             if next_idx < len(questions):
-                btn_text = f"➡️ Q {next_idx+1} 풀기"
-                callback_data = f"quiz_next:{session_id}"
+                await render_quiz_question(query, context, session_id, next_idx, updated_session)
             else:
-                btn_text = "📊 결과 보기"
-                callback_data = f"quiz_result:{session_id}"
-                
-            keyboard = [[InlineKeyboardButton(btn_text, callback_data=callback_data)]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+                await render_quiz_result(query, context, session_id, updated_session)
         else:
             # [오답 노트 자동 수집] 해당 문제를 처음 틀렸을 때(is_current_failed == 0)만 가중치를 1 올리거나 신규 등록하여 중복을 방지합니다.
             if is_current_failed == 0:
@@ -985,14 +994,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 button = InlineKeyboardButton(text=option_letters[idx], callback_data=f"quiz_ans:{session_id}:{idx}")
                 keyboard.append(button)
             reply_markup = InlineKeyboardMarkup([keyboard])
-        
-        await send_safe_message(
-            chat_id=query.message.chat_id,
-            bot=context.bot,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode="HTML"
-        )
+            
+            await send_safe_message(
+                chat_id=query.message.chat_id,
+                bot=context.bot,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
         
     elif data.startswith("quiz_next:"):
         parts = data.split(":")
