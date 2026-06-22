@@ -896,7 +896,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("❌ <b>유효하지 않은 퀴즈 세션입니다.</b>", parse_mode="HTML")
             return
             
-        await render_quiz_question(query, session_id, 0, session_data)
+        await render_quiz_question(query, context, session_id, 0, session_data)
         
     elif data.startswith("quiz_ans:"):
         parts = data.split(":")
@@ -950,7 +950,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         await send_safe_message(
             chat_id=query.message.chat_id,
-            bot=query.message.bot,
+            bot=context.bot,
             text=text,
             reply_markup=reply_markup,
             parse_mode="HTML"
@@ -963,7 +963,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not session_data:
             await query.message.reply_text("❌ 유효하지 않은 퀴즈 세션입니다.")
             return
-        await render_quiz_question(query, session_id, session_data["current_index"], session_data)
+        await render_quiz_question(query, context, session_id, session_data["current_index"], session_data)
         
     elif data.startswith("quiz_result:"):
         parts = data.split(":")
@@ -973,7 +973,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("❌ 유효하지 않은 퀴즈 세션입니다.")
             return
             
-        await render_quiz_result(query, session_id, session_data)
+        await render_quiz_result(query, context, session_id, session_data)
         
     elif data == "quiz_history":
         logger.info(f"Callback quiz_history for chat {chat_id}")
@@ -1569,7 +1569,7 @@ async def post_init(application: Application) -> None:
     except Exception as e:
         logger.error(f"Failed to start Google Calendar reminders scheduler: {e}", exc_info=True)
 
-async def render_quiz_question(query, session_id: int, index: int, session_data: dict = None):
+async def render_quiz_question(query, context, session_id: int, index: int, session_data: dict = None):
     """Helper to render a specific quiz question using inline keyboard buttons."""
     if not session_data:
         session_data = database.get_quiz_session(session_id)
@@ -1580,7 +1580,7 @@ async def render_quiz_question(query, session_id: int, index: int, session_data:
         
     questions = json.loads(session_data["questions_json"])
     if index >= len(questions):
-        await render_quiz_result(query, session_id, session_data)
+        await render_quiz_result(query, context, session_id, session_data)
         return
         
     q = questions[index]
@@ -1602,13 +1602,13 @@ async def render_quiz_question(query, session_id: int, index: int, session_data:
     
     await send_safe_message(
         chat_id=query.message.chat_id,
-        bot=query.message.bot,
+        bot=context.bot,
         text="\n".join(text_lines),
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
 
-async def render_quiz_result(query, session_id: int, session_data: dict = None):
+async def render_quiz_result(query, context, session_id: int, session_data: dict = None):
     """Helper to render the final results of a quiz."""
     if not session_data:
         session_data = database.get_quiz_session(session_id)
@@ -1645,7 +1645,7 @@ async def render_quiz_result(query, session_id: int, session_data: dict = None):
     
     await send_safe_message(
         chat_id=query.message.chat_id,
-        bot=query.message.bot,
+        bot=context.bot,
         text=text,
         reply_markup=reply_markup,
         parse_mode="HTML"
