@@ -322,6 +322,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 parse_mode="HTML"
             )
             
+    # 1.1 메모 개별 삭제 콜백 핸들러 추가
+    elif data.startswith("memo_del:"):
+        note_id = int(data.split(":")[1])
+        logger.info(f"Request to delete note ID {note_id} via callback")
+        # 데이터베이스에서 특정 메모(노트)를 삭제 처리합니다.
+        success = database.delete_note(note_id)
+        if success:
+            # 비파괴 UI 원칙에 따라 기존 메시지를 편집(수정/삭제)하지 않고, 새로운 메시지로 피드백을 전달합니다.
+            await send_safe_message(
+                query=query,
+                text=f"❌ <b>메모 #{note_id}을(를) 성공적으로 삭제했습니다!</b>",
+                parse_mode="HTML"
+            )
+        else:
+            await send_safe_message(
+                query=query,
+                text=f"❌ <b>메모 #{note_id} 삭제 실패 (이미 삭제되었거나 존재하지 않음)</b>",
+                parse_mode="HTML"
+            )
+            
     elif data == "expense_stat":
         logger.info(f"Callback expense_stat for chat {chat_id}")
         tools.current_chat_id.set(chat_id)
@@ -1723,6 +1743,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             keyboard.append([InlineKeyboardButton("📋 나의 할 일 목록 보기", callback_data="refresh")])
         if "save_note" in tools_run:
             keyboard.append([InlineKeyboardButton("🔍 메모 검색", callback_data="prompt_search_notes")])
+        # 2.1 메모 검색 결과가 있을 때, 각 메모를 삭제할 수 있는 [❌ #ID 삭제] 인라인 버튼 목록 구성
+        if "search_notes" in tools_run:
+            import re
+            # 에이전트의 답변 텍스트(reply_text) 내에서 '[ID]' 형식으로 표시된 메모 ID를 모두 추출합니다.
+            # 정규식을 이용해 대괄호 사이에 있는 하나 이상의 숫자 문자열을 찾아 정수로 파싱합니다.
+            note_ids = [int(nid) for nid in re.findall(r'\[(\d+)\]', reply_text)]
+            if note_ids:
+                note_buttons = []
+                for note_id in note_ids:
+                    # 각 메모 ID에 대해 'memo_del:{id}' 형태의 콜백 데이터 버튼을 생성합니다.
+                    btn = InlineKeyboardButton(f"❌ #{note_id} 삭제", callback_data=f"memo_del:{note_id}")
+                    note_buttons.append(btn)
+                
+                # 모바일 기기 화면의 폭을 효율적으로 활용하고 줄바꿈을 조절하기 위해 1행에 최대 2개씩 삭제 버튼을 격자 형태로 추가합니다.
+                for i in range(0, len(note_buttons), 2):
+                    keyboard.append(note_buttons[i:i+2])
+                    
         if "list_google_calendar_events" in tools_run or "create_google_calendar_event" in tools_run:
             keyboard.append([InlineKeyboardButton("📅 일정 새로고침", callback_data="refresh_calendar")])
         if "list_unread_emails" in tools_run or "send_email_via_gmail" in tools_run or "search_emails_via_gmail" in tools_run:
