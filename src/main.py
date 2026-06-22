@@ -108,14 +108,16 @@ async def send_safe_message(
     parse_mode="HTML"
 ):
     """
-    Sends or edits a Telegram message safely using HTML. If it fails, falls back to plain text.
+    Sends a Telegram message safely using HTML as a new message.
+    기존 위에 남아있는 메시지를 덮어쓰거나 수정하지 않고, 항상 새 메시지로 전송하도록 연동되었습니다.
     """
     # Pre-process text to convert unsupported HTML tags if parse_mode is HTML
     if parse_mode == "HTML" and text:
         text = await clean_unsupported_html(text)
     try:
-        if query:
-            await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
+        if query and query.message:
+            # [대화 보존 정책] 기존 메시지를 수정하지 않고, 답글 형태로 새 메시지를 발송합니다.
+            await query.message.reply_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
         elif update and update.message:
             await update.message.reply_text(text=text, reply_markup=reply_markup, parse_mode=parse_mode)
         elif bot and chat_id:
@@ -131,8 +133,9 @@ async def send_safe_message(
         plain_text = plain_text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
         
         try:
-            if query:
-                await query.edit_message_text(text=plain_text, reply_markup=reply_markup)
+            if query and query.message:
+                # [대화 보존 정책] 플레인 텍스트 폴백 시에도 새 메시지로 전송합니다.
+                await query.message.reply_text(text=plain_text, reply_markup=reply_markup)
             elif update and update.message:
                 await update.message.reply_text(text=plain_text, reply_markup=reply_markup)
             elif bot and chat_id:
@@ -426,9 +429,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "실시간 데이터를 반영하여 주간 리포트가 갱신되었습니다."
             )
             
-            await query.edit_message_media(
-                media=InputMediaPhoto(media=open(image_path, 'rb'), caption=caption, parse_mode="HTML"),
-                reply_markup=reply_markup
+            # [대화 보존 정책] 기존 이미지를 덮어쓰지 않고, 새로운 메시지로 갱신된 리포트 이미지를 전송합니다.
+            await query.message.reply_photo(
+                photo=open(image_path, 'rb'),
+                caption=caption,
+                reply_markup=reply_markup,
+                parse_mode="HTML"
             )
         except Exception as e:
             logger.error(f"Failed to refresh weekly report: {e}", exc_info=True)
