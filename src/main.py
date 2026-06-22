@@ -291,7 +291,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Answer callback query to remove loading spinner.
     # Some callbacks provide custom alerts/toasts, so we only answer here if not handled individually.
     data = query.data
-    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:", "quiz_add_more:"]
+    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:", "quiz_add_more:", "quiz_review_start"]
     if not any(data.startswith(c) for c in custom_callbacks):
         await query.answer()
         
@@ -931,6 +931,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             new_score = score + 1 if is_current_failed == 0 else score
             next_idx = curr_idx + 1
             
+            # [오답 복습 처리] 만약 현재 진행 중인 세션이 '오답 노트 복습' 모드라면, 정답을 맞춘 문제를 오답 노출 리스트에서 제거합니다.
+            if session_data["title"] == "오답 노트 복습":
+                database.remove_incorrect_note_by_text(chat_id, q["question"])
+            
             # 다음 문제로 넘어가므로 DB에 다음 문제 인덱스를 저장하고, 재시도 오답 여부(is_current_failed)는 다시 0으로 초기화합니다.
             database.update_quiz_session(session_id, next_idx, new_score, "active", is_current_failed=0)
             
@@ -953,6 +957,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             keyboard = [[InlineKeyboardButton(btn_text, callback_data=callback_data)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
         else:
+            # [오답 노트 자동 수집] 해당 문제를 처음 틀렸을 때(is_current_failed == 0)만 가중치를 1 올리거나 신규 등록하여 중복을 방지합니다.
+            if is_current_failed == 0:
+                opt_json = json.dumps(q["options"], ensure_ascii=False)
+                database.add_or_increment_incorrect_note(
+                    chat_id=chat_id,
+                    title=session_data["title"],
+                    question_text=q["question"],
+                    options_json=opt_json,
+                    correct_option=correct,
+                    explanation=q["explanation"]
+                )
+            
             # [오답 처리 규칙] 틀린 경우 점수나 인덱스는 그대로 두고, 오답 이력(is_current_failed = 1)만 표시하여 DB에 저장합니다.
             database.update_quiz_session(session_id, curr_idx, score, "active", is_current_failed=1)
             
@@ -1048,6 +1064,46 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # 갱신된 데이터를 기반으로 사용자에게 새로 생긴 첫 번째 문제(Q 11)를 출제합니다.
         updated_session = database.get_quiz_session(session_id)
         await render_quiz_question(query, context, session_id, current_idx, updated_session)
+        
+    elif data == "quiz_review_start":
+        # [오답 복습 시작 콜백] 사용자가 설정화면 등에서 '오답 복습' 버튼을 눌렀을 때 실행됩니다.
+        logger.info(f"Callback quiz_review_start for chat {chat_id}")
+        
+        # 1. 현재 데이터베이스에 등록된 사용자의 오답 개수를 가져옵니다.
+        incorrect_count = database.get_incorrect_notes_count(chat_id)
+        if incorrect_count == 0:
+            # 오답이 없는 경우, 텔레그램 상단에 '틀린 문제가 없습니다!' 알림을 띄우고 리턴합니다.
+            await query.answer("틀린 문제가 없습니다! 👏", show_alert=True)
+            return
+            
+        # 2. 로딩 스피너를 제거하고 사용자에게 준비 알림을 띄웁니다.
+        await query.answer("오답 노트를 바탕으로 복습 퀴즈를 생성하고 있습니다... ⏳")
+        
+        # 3. 데이터베이스에서 틀린 횟수가 높은 가중치 위주로 최대 5개의 오답 문항을 임의 추출합니다.
+        notes = database.get_incorrect_notes_for_review(chat_id, limit=5)
+        
+        # 4. 추출된 오답 데이터를 퀴즈 세션용 질문 JSON 구조로 매핑하여 빌드합니다.
+        review_questions = []
+        for n in notes:
+            try:
+                options = json.loads(n["options_json"])
+            except Exception:
+                options = []
+            review_questions.append({
+                "question": n["question_text"],
+                "options": options,
+                "correct_option": n["correct_option"],
+                "explanation": n["explanation"]
+            })
+            
+        review_questions_json = json.dumps(review_questions, ensure_ascii=False)
+        
+        # 5. 타이틀을 '오답 노트 복습'으로 지정하고, 원본 source_content가 없으므로 None으로 전달하여 복습 세션을 생성합니다.
+        session_id = database.create_quiz_session(chat_id, "오답 노트 복습", review_questions_json, None)
+        
+        # 6. 새로 생성된 복습 세션 데이터를 조회한 뒤 첫 번째 오답(Q 1) 문제를 화면에 렌더링합니다.
+        session_data = database.get_quiz_session(session_id)
+        await render_quiz_question(query, context, session_id, 0, session_data)
         
     elif data == "quiz_history":
         logger.info(f"Callback quiz_history for chat {chat_id}")
@@ -1174,17 +1230,21 @@ async def render_settings_ui(chat_id: int, update: Update = None, query = None, 
     expenses = database.get_expenses(chat_id, start_date, end_date)
     total_spent = sum(item['amount'] for item in expenses) if expenses else 0
     
-    # Get quiz stats
+    # 데이터베이스에서 누적 완료된 퀴즈 개수와 평균 정답률 통계를 가져옵니다.
     quiz_stats = database.get_completed_quiz_stats(chat_id)
     total_quizzes = quiz_stats["total_quizzes"]
     avg_rate = quiz_stats["avg_rate"]
+    
+    # [오답 노트 연동] 현재 복습용 오답 노트 데이터베이스에 보관 중인 문제 개수를 조회합니다.
+    incorrect_count = database.get_incorrect_notes_count(chat_id)
     
     text = (
         "⚙️ <b>개인 비서 AI 에이전트 설정</b>\n\n"
         f"👤 <b>구글 계정 연동 상태:</b> {google_status}\n"
         f"📅 <b>등록된 D-Day:</b> <code>{ddays_count}개</code>\n"
         f"📊 <b>이번 달 누적 지출액:</b> <code>{total_spent:,}원</code>\n"
-        f"📖 <b>퀴즈 학습 이력:</b> <code>{total_quizzes}회 완료 (평균 정답률: {avg_rate:.1f}%)</code>\n\n"
+        f"📖 <b>퀴즈 학습 이력:</b> <code>{total_quizzes}회 완료 (평균 정답률: {avg_rate:.1f}%)</code>\n"
+        f"❌ <b>보관된 오답 문제:</b> <code>{incorrect_count}개</code>\n\n"
         f"⏰ <b>일일 브리핑 설정:</b>\n"
         f"  • 브리핑 시간: <code>{briefing_time}</code>\n"
         f"  • 날씨 지역: <code>{location}</code>\n\n"
@@ -1220,9 +1280,10 @@ async def render_settings_ui(chat_id: int, update: Update = None, query = None, 
         InlineKeyboardButton("🔄 설정 갱신", callback_data="refresh_settings")
     ])
     
-    # Row 5: Quiz History
+    # Row 5: Quiz History & Incorrect Notes Review
     keyboard.append([
-        InlineKeyboardButton("📖 퀴즈 이력 조회", callback_data="quiz_history")
+        InlineKeyboardButton("📖 퀴즈 이력", callback_data="quiz_history"),
+        InlineKeyboardButton(f"❌ 오답 복습 ({incorrect_count}개)", callback_data="quiz_review_start")
     ])
     
     reply_markup = InlineKeyboardMarkup(keyboard)

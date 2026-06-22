@@ -202,6 +202,21 @@ def init_db():
                 cursor.execute("ALTER TABLE quiz_sessions ADD COLUMN is_current_failed INTEGER NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
                 pass # 이미 존재함
+            # 사용자가 틀린 문제를 보관 및 복습할 수 있게 지원하는 quiz_incorrect_notes 테이블 생성
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS quiz_incorrect_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,          -- 출처가 된 유튜브/아티클의 제목
+                    question_text TEXT NOT NULL,  -- 질문 내용
+                    options_json TEXT NOT NULL,   -- 객관식 보기 리스트 (JSON 배열 형태)
+                    correct_option INTEGER NOT NULL, -- 정답 인덱스 (0, 1, 2, 3)
+                    explanation TEXT NOT NULL,    -- 정답 해설
+                    wrong_count INTEGER NOT NULL DEFAULT 1, -- 사용자가 이 문제를 틀린 횟수 (누적 가중치)
+                    created_at TEXT NOT NULL,
+                    UNIQUE(chat_id, question_text) -- 한 사용자가 동일한 질문에 대해 여러 번 틀릴 경우 wrong_count만 증가하도록 제한
+                )
+            """)
     finally:
         conn.close()
 
@@ -1005,11 +1020,77 @@ def get_completed_quizzes(chat_id: int, limit: int = 5) -> list:
         conn.close()
 
 def delete_quiz_session(session_id: int) -> bool:
+    """테스트 혹은 특정 사유로 생성된 퀴즈 세션을 삭제합니다."""
     conn = get_db_connection()
     try:
         with conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM quiz_sessions WHERE id = ?", (session_id,))
+            return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+# 오답 노트(quiz_incorrect_notes) 테이블 조작 헬퍼 함수 목록
+def add_or_increment_incorrect_note(chat_id: int, title: str, question_text: str, options_json: str, correct_option: int, explanation: str) -> bool:
+    """
+    오답 노트를 생성하거나 틀린 횟수(wrong_count)를 1 증가시킵니다.
+    UNIQUE(chat_id, question_text) 제약조건을 이용해 이미 존재할 경우 wrong_count만 증가하도록 처리합니다.
+    """
+    created_at = datetime.now().isoformat()
+    conn = get_db_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO quiz_incorrect_notes (chat_id, title, question_text, options_json, correct_option, explanation, wrong_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT(chat_id, question_text) DO UPDATE SET
+                    wrong_count = wrong_count + 1,
+                    created_at = excluded.created_at
+            """, (chat_id, title, question_text, options_json, correct_option, explanation, created_at))
+            return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+def get_incorrect_notes_for_review(chat_id: int, limit: int = 5) -> list:
+    """
+    사용자가 틀린 문제들 중 복습할 5(limit)개의 문항을 추출합니다.
+    틀린 횟수(wrong_count)가 많은 순으로 가중치를 두고, 그 중 무작위 요소로 추출하도록 쿼리를 설계했습니다.
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        # wrong_count가 높은 상위 15개 중 임의로 limit(5)개를 가져옴으로써 가중치와 무작위성 조율
+        cursor.execute("""
+            SELECT * FROM (
+                SELECT * FROM quiz_incorrect_notes 
+                WHERE chat_id = ? 
+                ORDER BY wrong_count DESC 
+                LIMIT 15
+            ) ORDER BY RANDOM() LIMIT ?
+        """, (chat_id, limit))
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+def get_incorrect_notes_count(chat_id: int) -> int:
+    """사용자가 현재 오답 노트에 보관 중인 문제들의 총 개수를 조회합니다."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as cnt FROM quiz_incorrect_notes WHERE chat_id = ?", (chat_id,))
+        row = cursor.fetchone()
+        return row['cnt'] if row else 0
+    finally:
+        conn.close()
+
+def remove_incorrect_note_by_text(chat_id: int, question_text: str) -> bool:
+    """복습 과정에서 사용자가 정답을 맞춘 문제를 오답 노트 테이블에서 영구 삭제합니다."""
+    conn = get_db_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM quiz_incorrect_notes WHERE chat_id = ? AND question_text = ?", (chat_id, question_text))
             return cursor.rowcount > 0
     finally:
         conn.close()
