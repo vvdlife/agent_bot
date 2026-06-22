@@ -802,6 +802,85 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         await query.message.reply_text(text, parse_mode="HTML")
 
+    elif data.startswith("travel_apply:"):
+        plan_id = int(data.split(":")[1])
+        logger.info(f"Request to bulk register travel plan ID {plan_id} to Google Calendar")
+        await query.answer("구글 캘린더에 일정을 등록하고 있습니다...")
+        
+        plan = database.get_pending_travel_plan(plan_id)
+        if not plan:
+            await query.message.reply_text("❌ <b>해당 여행 계획을 찾을 수 없거나 이미 삭제되었습니다.</b>", parse_mode="HTML")
+            return
+            
+        import json
+        try:
+            events = json.loads(plan['events_json'])
+        except Exception as e:
+            await query.message.reply_text(f"❌ <b>일정 데이터 파싱 오류: {str(e)}</b>", parse_mode="HTML")
+            return
+            
+        if not events:
+            await query.message.reply_text("❌ <b>등록할 일정이 없습니다.</b>", parse_mode="HTML")
+            return
+
+        from src import google_auth
+        from googleapiclient.discovery import build
+        try:
+            creds = google_auth.get_google_credentials(chat_id)
+            service = build('calendar', 'v3', credentials=creds)
+        except google_auth.GoogleAuthRequiredError:
+            await query.message.reply_text("🔒 <b>구글 계정 연동 세션이 없거나 만료되었습니다.</b>\n/login 명령어로 로그인을 먼저 완료한 후 다시 시도해 주세요.")
+            return
+        except Exception as e:
+            await query.message.reply_text(f"❌ 구글 서비스 빌드 중 오류 발생: {str(e)}")
+            return
+
+        success_count = 0
+        failed_count = 0
+        for ev in events:
+            try:
+                event_body = {
+                    'summary': ev.get('summary', '여행 일정'),
+                    'start': {
+                        'dateTime': ev.get('start_time_iso'),
+                        'timeZone': 'Asia/Seoul',
+                    },
+                    'end': {
+                        'dateTime': ev.get('end_time_iso'),
+                        'timeZone': 'Asia/Seoul',
+                    },
+                }
+                if ev.get('description'):
+                    event_body['description'] = ev.get('description')
+                if ev.get('location'):
+                    event_body['location'] = ev.get('location')
+                    
+                service.events().insert(calendarId='primary', body=event_body).execute()
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Failed to register travel event {ev.get('summary')}: {e}")
+                failed_count += 1
+
+        result_text = (
+            f"📅 <b>구글 캘린더 일괄 등록 완료!</b>\n\n"
+            f"• 목적지: <b>{plan['destination']}</b>\n"
+            f"• 기간: <code>{plan['start_date']} ~ {plan['end_date']}</code>\n"
+            f"• 성공: <code>{success_count}개</code>\n"
+        )
+        if failed_count > 0:
+            result_text += f"• 실패: <code>{failed_count}개</code>\n"
+            
+        result_text += "\n구글 캘린더 앱 또는 웹에서 일정이 잘 들어갔는지 확인해 보세요!"
+        
+        keyboard = [[InlineKeyboardButton("📅 일정 새로고침", callback_data="refresh_calendar")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await send_safe_message(
+            query=query,
+            text=result_text,
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+
 async def handle_google_auth_required(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     """Generates OAuth URL, starts redirect server, and sends login button to user."""
     from src import google_auth
@@ -1022,6 +1101,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 InlineKeyboardButton("📅 D-Day 목록 조회", callback_data="dday_list"),
                 InlineKeyboardButton("⚙️ 설정 탭 이동", callback_data="refresh_settings")
             ])
+        if "propose_travel_itinerary" in tools_run:
+            import re
+            match = re.search(r"플랜 ID: (\d+)", reply_text)
+            if match:
+                plan_id = int(match.group(1))
+                keyboard.append([InlineKeyboardButton("📅 구글 캘린더에 전체 등록", callback_data=f"travel_apply:{plan_id}")])
             
         reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
         
@@ -1249,6 +1334,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 InlineKeyboardButton("📅 D-Day 목록 조회", callback_data="dday_list"),
                 InlineKeyboardButton("⚙️ 설정 탭 이동", callback_data="refresh_settings")
             ])
+        if "propose_travel_itinerary" in tools_run:
+            import re
+            match = re.search(r"플랜 ID: (\d+)", reply_text)
+            if match:
+                plan_id = int(match.group(1))
+                keyboard.append([InlineKeyboardButton("📅 구글 캘린더에 전체 등록", callback_data=f"travel_apply:{plan_id}")])
             
         reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
         

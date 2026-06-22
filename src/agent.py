@@ -55,6 +55,12 @@ SYSTEM_INSTRUCTION = """
    - 메모 검색 및 조회 요청 시 ➡️ `search_notes` 도구를 사용하세요.
    - 특정 메모 삭제 요청 시 ➡️ `delete_local_note` 도구를 사용하세요. (ID가 필요하므로 필요한 경우 먼저 메모 검색을 하거나 ID를 물어보세요.)
    - 메모 전체 삭제 또는 비우기 요청 시 ➡️ `clear_all_local_notes` 도구를 사용하세요.
+   - 여행 일정 플래닝 및 등록 요청 시 (예: "7월 15일부터 3일간 도쿄 여행 계획 짜줘") ➡️ 다음 프로세스를 준수하십시오:
+      1. 가고 싶은 특정 명소(랜드마크)나 선호하는 여행 스타일(힐링, 맛집 투어, 액티비티, 쇼핑 등)을 먼저 물어보세요. (예: "도쿄 여행이군요! 혹시 꼭 가고 싶으신 명소나 선호하는 여행 스타일이 있으신가요?")
+      2. 사용자가 선호를 답하면, 여행 목적지의 날씨 정보를 제공하세요:
+         - 여행 시점이 7일 이내라면 `get_current_weather` 도구로 실시간 날씨를 조회하세요.
+         - 7일보다 먼 미래라면 `web_search` 도구를 사용해 해당 월의 목적지 평균 기후 정보(기온, 강수량 등)를 요약해 제공하세요.
+      3. 웹 검색(`web_search`)을 활용해 사용자의 스타일과 동선에 최적화된 여행 일정을 시간대별/일자별로 작성해 준 뒤, 사용자 동의 하에 구글 캘린더에 일괄 등록할 수 있도록 `propose_travel_itinerary` 도구를 실행하십시오. (이 도구는 DB에 일정을 임시 저장하고 등록용 버튼을 띄우는 역할을 합니다.)
    - 일반 대화 및 질의응답 시 ➡️ 1줄 요약(Summary)과 2~3문장의 상세 설명(Details)으로 구분하여 전달하세요.
 
 
@@ -353,7 +359,8 @@ def process_message(chat_id: int, user_message_text: str = None, file_path: str 
         tools.get_expense_summary_tool,
         tools.add_dday_tool,
         tools.list_ddays_tool,
-        tools.delete_dday_tool
+        tools.delete_dday_tool,
+        tools.propose_travel_itinerary
     ]
     
     # 3. Call Gemini API

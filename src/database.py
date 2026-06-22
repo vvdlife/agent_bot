@@ -165,6 +165,18 @@ def init_db():
                     PRIMARY KEY (chat_id, report_week)
                 )
             """)
+            # Create pending travel plans table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_travel_plans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    destination TEXT NOT NULL,
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    events_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
     finally:
         conn.close()
 
@@ -821,6 +833,32 @@ def cleanup_old_weekly_reports(days: int = 365):
                 "DELETE FROM sent_weekly_reports WHERE sent_at < ?",
                 (threshold,)
             )
+    finally:
+        conn.close()
+
+# Travel Planner Operations
+def save_pending_travel_plan(chat_id: int, destination: str, start_date: str, end_date: str, events_json: str) -> int:
+    created_at = datetime.now().isoformat()
+    conn = get_db_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO pending_travel_plans (chat_id, destination, start_date, end_date, events_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (chat_id, destination, start_date, end_date, events_json, created_at)
+            )
+            return cursor.lastrowid
+    finally:
+        conn.close()
+
+def get_pending_travel_plan(plan_id: int) -> dict:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM pending_travel_plans WHERE id = ?", (plan_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 

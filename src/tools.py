@@ -1111,6 +1111,37 @@ def delete_dday_tool(dday_id: int) -> str:
         return f"Error: D-Day with ID {dday_id} not found."
 
 
+def propose_travel_itinerary(destination: str, start_date: str, end_date: str, events: list[dict]) -> str:
+    """
+    AI가 설계한 맞춤 여행 일정을 사용자에게 제안하고 검토할 수 있도록 임시 저장합니다.
+    사용자가 동의하면 구글 캘린더에 일괄 등록 버튼을 생성할 수 있습니다.
+
+    Args:
+        destination: 여행 목적지 도시명 (예: 'Tokyo', 'Paris'). 필수.
+        start_date: 여행 시작일 (YYYY-MM-DD 포맷, 예: '2026-07-15'). 필수.
+        end_date: 여행 종료일 (YYYY-MM-DD 포맷, 예: '2026-07-17'). 필수.
+        events: 일자별 세부 일정 객체 리스트. 필수.
+                각 객체 필수 키: 'summary'(일정 제목), 'start_time_iso'(시작 일시 ISO 8601 포맷, 예: '2026-07-15T10:00:00'), 'end_time_iso'(종료 일시 ISO 8601 포맷, 예: '2026-07-15T11:30:00').
+                선택 키: 'description'(세부 설명), 'location'(구체적인 위치).
+
+    Returns:
+        성공 여부 및 임시 저장된 플랜 ID 정보 메시지.
+    """
+    import json
+    if not destination or not start_date or not end_date or not events:
+        return "Error: destination, start_date, end_date, events는 필수 입력값입니다."
+        
+    chat_id = current_chat_id.get()
+    events_json = json.dumps(events, ensure_ascii=False)
+    
+    try:
+        plan_id = database.save_pending_travel_plan(chat_id, destination, start_date, end_date, events_json)
+        return f"Success: 여행 일정을 임시 저장했습니다. (플랜 ID: {plan_id}). 사용자가 아래 [📅 구글 캘린더에 전체 등록] 버튼을 누르면 이 일정들이 캘린더에 일괄 등록됩니다."
+    except Exception as e:
+        return f"Error: 여행 일정을 임시 저장하는 데 실패했습니다. {str(e)}"
+
+
+
 
 
 
