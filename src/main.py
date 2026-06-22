@@ -817,7 +817,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.message.reply_text("❌ <b>해당 여행 계획을 찾을 수 없거나 이미 삭제되었습니다.</b>", parse_mode="HTML")
             return
             
-        import json
         try:
             events = json.loads(plan['events_json'])
         except Exception as e:
