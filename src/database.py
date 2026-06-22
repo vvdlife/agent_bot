@@ -914,8 +914,8 @@ def create_quiz_session(chat_id: int, title: str, questions_json: str, source_co
     try:
         with conn:
             cursor = conn.cursor()
-            # 1. 기존의 활성화된 다른 퀴즈 세션 강제 완료 처리
-            cursor.execute("UPDATE quiz_sessions SET status = 'completed' WHERE chat_id = ? AND status = 'active'", (chat_id,))
+            # 1. 기존의 활성화된 다른 퀴즈 세션 강제 완료 처리 (용량 절약을 위해 완료되는 세션의 원본 본문 텍스트는 지웁니다)
+            cursor.execute("UPDATE quiz_sessions SET status = 'completed', source_content = NULL WHERE chat_id = ? AND status = 'active'", (chat_id,))
             # 2. 새로운 세션 정보 INSERT (최초 점수: 0, 최초 인덱스: 0, 오답 상태: 0)
             cursor.execute(
                 "INSERT INTO quiz_sessions (chat_id, title, questions_json, source_content, current_index, score, is_current_failed, status, created_at) "
@@ -1092,6 +1092,24 @@ def remove_incorrect_note_by_text(chat_id: int, question_text: str) -> bool:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM quiz_incorrect_notes WHERE chat_id = ? AND question_text = ?", (chat_id, question_text))
             return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+def cleanup_old_quiz_sessions(days: int = 30):
+    """
+    지정된 일수(days)보다 오래된 퀴즈 세션의 원본 본문 텍스트(source_content)를 NULL 처리하여
+    데이터베이스 파일 용량을 최적화합니다.
+    """
+    from datetime import datetime, timedelta
+    threshold = (datetime.now() - timedelta(days=days)).isoformat()
+    conn = get_db_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE quiz_sessions SET source_content = NULL WHERE created_at < ? AND source_content IS NOT NULL",
+                (threshold,)
+            )
     finally:
         conn.close()
 

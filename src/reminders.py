@@ -574,6 +574,13 @@ async def check_and_send_briefings(application):
         database.cleanup_old_briefings(days=30)
     except Exception as e:
         logger.error(f"Failed to cleanup old briefings: {e}")
+        
+    try:
+        # [용량 최적화] 30일이 경과한 오래된 퀴즈 세션의 원본 본문 텍스트를 정리합니다.
+        database.cleanup_old_quiz_sessions(days=30)
+        logger.info("Successfully cleaned up old quiz sessions' source content.")
+    except Exception as e:
+        logger.error(f"Failed to cleanup old quiz sessions: {e}")
 
 async def check_and_send_dday_alerts(application):
     """사용자의 D-Day 목록을 스캔하여 D-3, D-1, D-Day 당일 알림을 푸시 발송합니다."""
