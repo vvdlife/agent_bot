@@ -1052,23 +1052,35 @@ def add_or_increment_incorrect_note(chat_id: int, title: str, question_text: str
     finally:
         conn.close()
 
-def get_incorrect_notes_for_review(chat_id: int, limit: int = 5) -> list:
+def get_incorrect_notes_for_review(chat_id: int, limit: int = 5, exclude_questions: list = None) -> list:
     """
     사용자가 틀린 문제들 중 복습할 5(limit)개의 문항을 추출합니다.
     틀린 횟수(wrong_count)가 많은 순으로 가중치를 두고, 그 중 무작위 요소로 추출하도록 쿼리를 설계했습니다.
+    제외할 질문 내용 목록(exclude_questions)이 있으면 이를 쿼리에서 배제하여 중복 추출을 방지합니다.
     """
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
+        query = "SELECT * FROM quiz_incorrect_notes WHERE chat_id = ?"
+        params = [chat_id]
+        
+        # 중복 추출 방지 적용
+        if exclude_questions:
+            placeholders = ",".join("?" for _ in exclude_questions)
+            query += f" AND question_text NOT IN ({placeholders})"
+            params.extend(exclude_questions)
+            
         # wrong_count가 높은 상위 15개 중 임의로 limit(5)개를 가져옴으로써 가중치와 무작위성 조율
-        cursor.execute("""
+        final_query = f"""
             SELECT * FROM (
-                SELECT * FROM quiz_incorrect_notes 
-                WHERE chat_id = ? 
+                {query} 
                 ORDER BY wrong_count DESC 
                 LIMIT 15
             ) ORDER BY RANDOM() LIMIT ?
-        """, (chat_id, limit))
+        """
+        params.append(limit)
+        
+        cursor.execute(final_query, tuple(params))
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()

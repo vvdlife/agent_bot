@@ -291,7 +291,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Answer callback query to remove loading spinner.
     # Some callbacks provide custom alerts/toasts, so we only answer here if not handled individually.
     data = query.data
-    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:", "quiz_add_more:", "quiz_review_start"]
+    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:", "quiz_add_more:", "quiz_review_start", "quiz_review_more:"]
     if not any(data.startswith(c) for c in custom_callbacks):
         await query.answer()
         
@@ -1114,6 +1114,61 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         session_data = database.get_quiz_session(session_id)
         await render_quiz_question(query, context, session_id, 0, session_data)
         
+    elif data.startswith("quiz_review_more:"):
+        # [추가 오답 복습 콜백] 복습 5문제를 다 푼 뒤, 남은 오답을 이어서 더 풀고자 할 때 실행됩니다.
+        parts = data.split(":")
+        session_id = int(parts[1])
+        logger.info(f"Adding 5 more incorrect questions for session ID {session_id}")
+        
+        session_data = database.get_quiz_session(session_id)
+        if not session_data:
+            await query.message.reply_text("❌ <b>유효하지 않은 퀴즈 세션입니다.</b>", parse_mode="HTML")
+            return
+            
+        existing_questions = json.loads(session_data["questions_json"])
+        # 기존 복습 세션에 등록된 질문 내용 텍스트들을 추출하여 중복 추출 대상에서 배제합니다.
+        exclude_texts = [q["question"] for q in existing_questions]
+        
+        # 1. 겹치지 않는 추가 오답 5문항을 데이터베이스에서 가져옵니다.
+        new_notes = database.get_incorrect_notes_for_review(chat_id, limit=5, exclude_questions=exclude_texts)
+        if not new_notes:
+            await query.answer("남아있는 새로운 오답이 없습니다! 🎉", show_alert=True)
+            return
+            
+        await query.answer("오답 노트를 이어서 복습합니다... ⏳")
+        
+        # 2. 가져온 오답 데이터를 퀴즈용 질문 형식으로 파싱합니다.
+        new_questions = []
+        for n in new_notes:
+            try:
+                options = json.loads(n["options_json"])
+            except Exception:
+                options = []
+            new_questions.append({
+                "question": n["question_text"],
+                "options": options,
+                "correct_option": n["correct_option"],
+                "explanation": n["explanation"]
+            })
+            
+        # 3. 기존 질문 목록에 새 질문 목록을 병합합니다.
+        merged_questions = existing_questions + new_questions
+        merged_json = json.dumps(merged_questions, ensure_ascii=False)
+        
+        # 4. 세션 인덱스를 다음 문제 번호로 지정하고, 세션을 다시 활성화하며, 재시도 오답 여부는 0으로 초기화합니다.
+        current_idx = len(existing_questions)
+        database.update_quiz_session(session_id, current_idx, session_data["score"], "active", merged_json, is_current_failed=0)
+        
+        await query.message.reply_text(
+            f"🎯 <b>추가 오답 복습 {len(new_questions)}문항 추가 완료!</b>\n"
+            f"이어서 복습해 보세요. (현재 문제 번호: Q {current_idx+1})",
+            parse_mode="HTML"
+        )
+        
+        # 5. 첫 번째 오답 문제를 다시 화면에 렌더링합니다.
+        updated_session = database.get_quiz_session(session_id)
+        await render_quiz_question(query, context, session_id, current_idx, updated_session)
+        
     elif data == "quiz_history":
         logger.info(f"Callback quiz_history for chat {chat_id}")
         completed = database.get_completed_quizzes(chat_id, limit=5)
@@ -1779,19 +1834,38 @@ async def render_quiz_result(query, context, session_id: int, session_data: dict
         f"⚙️ 퀴즈 요약 정보는 <b>비서 설정</b>(/settings)에서 누적 학습 통계로 확인하실 수 있습니다."
     )
     
-    keyboard = [
-        [
+    # 1. 데이터베이스에서 현재 남은 고유 오답 개수를 가져옵니다.
+    chat_id = query.message.chat_id
+    remaining_incorrect_count = database.get_incorrect_notes_count(chat_id)
+    
+    # 2. 복습 세션과 일반 퀴즈 세션에 따라 결과 화면의 추가 풀기 선택지 버튼을 차별화합니다.
+    if session_data["title"] == "오답 노트 복습":
+        # 오답 복습 모드에서 아직 오답이 남아있다면, 추가 오답 복습 버튼을 노출합니다.
+        if remaining_incorrect_count > 0:
+            row_buttons = [
+                InlineKeyboardButton(f"➕ 추가 복습 ({remaining_incorrect_count}개 남음)", callback_data=f"quiz_review_more:{session_id}")
+            ]
+        else:
+            row_buttons = []
+    else:
+        # 일반 퀴즈인 경우 기존 10문제 추가 풀기 버튼을 배치합니다.
+        row_buttons = [
             InlineKeyboardButton("➕ 10문제 추가 풀기", callback_data=f"quiz_add_more:{session_id}")
-        ],
-        [
-            InlineKeyboardButton("⚙️ 설정 보기", callback_data="refresh_settings"),
-            InlineKeyboardButton("📖 이력 조회", callback_data="quiz_history")
         ]
-    ]
+        
+    keyboard = []
+    if row_buttons:
+        keyboard.append(row_buttons)
+        
+    keyboard.append([
+        InlineKeyboardButton("⚙️ 설정 보기", callback_data="refresh_settings"),
+        InlineKeyboardButton("📖 이력 조회", callback_data="quiz_history")
+    ])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await send_safe_message(
-        chat_id=query.message.chat_id,
+        chat_id=chat_id,
         bot=context.bot,
         text=text,
         reply_markup=reply_markup,
