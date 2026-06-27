@@ -294,11 +294,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Answer callback query to remove loading spinner.
     # Some callbacks provide custom alerts/toasts, so we only answer here if not handled individually.
     data = query.data
-    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:", "quiz_add_more:", "quiz_review_start", "quiz_review_more:", "quiz_review_run:"]
+    custom_callbacks = ["dday_clear", "news_cat:", "news_my", "travel_apply:", "quiz_start:", "quiz_ans:", "quiz_add_more:", "quiz_review_start", "quiz_review_more:", "quiz_review_run:", "news_summarize:"]
     if not any(data.startswith(c) for c in custom_callbacks):
         await query.answer()
         
     chat_id = query.message.chat_id
+    tools.current_chat_id.set(chat_id)
     logger.info(f"=== Callback Query Received: '{data}' ===")
     
     # 1. Expense operations
@@ -702,22 +703,26 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             text_lines = [f"💼 <b>실시간 [{cat_name}] 뉴스 브리핑</b>\n"]
             buttons = []
             
+            keyboard = []
+            
             # Show up to 4 articles
             for idx, art in enumerate(filtered_articles[:4], start=1):
                 if not art.get('href') or not art['href'].startswith(('http://', 'https://')):
                     continue
-                art_id = database.save_news_article_cache(art['href'], art['title'])
+                database.add_sent_news(chat_id, art['href'])
+                art_id = database.save_news_article_cache(art['href'], art['title'], art.get('summary'))
                 title_esc = html.escape(art['title'])
-                snippet_esc = html.escape(art['body']) if 'body' in art else ""
+                summary_esc = html.escape(art.get('summary', art.get('body', '')))
+                if 'summary' not in art and len(summary_esc) > 120:
+                    summary_esc = f"{summary_esc[:120]}..."
                 
-                text_lines.append(f"<b>{idx}. <a href=\"{art['href']}\">{title_esc}</a></b>\n  <i>{snippet_esc[:120]}...</i>\n")
+                text_lines.append(f"<b>{idx}. <a href=\"{art['href']}\">{title_esc}</a></b>\n  <i>{summary_esc}</i>\n")
                 
-                buttons.append(
-                    InlineKeyboardButton(f"🔗 #{idx} 원문", url=art['href'])
-                )
+                keyboard.append([
+                    InlineKeyboardButton(f"🔗 #{idx} 원문", url=art['href']),
+                    InlineKeyboardButton(f"📝 #{idx} 요약/퀴즈", callback_data=f"news_summarize:{art_id}")
+                ])
                 
-            # Chunk buttons into 2-column rows
-            keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
             keyboard.append([InlineKeyboardButton("🔄 갱신", callback_data=f"news_cat:{category}")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -795,19 +800,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 for art in articles[:2]:
                     if not art.get('href') or not art['href'].startswith(('http://', 'https://')):
                         continue
-                    art_id = database.save_news_article_cache(art['href'], art['title'])
+                    database.add_sent_news(chat_id, art['href'])
+                    art_id = database.save_news_article_cache(art['href'], art['title'], art.get('summary'))
                     title_esc = html.escape(art['title'])
-                    snippet_esc = html.escape(art['body']) if 'body' in art else ""
+                    summary_esc = html.escape(art.get('summary', art.get('body', '')))
+                    if 'summary' not in art and len(summary_esc) > 90:
+                        summary_esc = f"{summary_esc[:90]}..."
                     
-                    text_lines.append(f"  • <b><a href=\"{art['href']}\">{title_esc}</a></b>\n    <i>{snippet_esc[:90]}...</i>")
+                    text_lines.append(f"  • <b><a href=\"{art['href']}\">{title_esc}</a></b>\n    <i>{summary_esc}</i>")
                     
                     buttons.append(
                         InlineKeyboardButton(f"🔗 #{btn_idx} 원문", url=art['href'])
                     )
+                    buttons.append(
+                        InlineKeyboardButton(f"📝 #{btn_idx} 요약/퀴즈", callback_data=f"news_summarize:{art_id}")
+                    )
                     btn_idx += 1
                 text_lines.append("")
                 
-            # Chunk buttons into 2-column rows
+            # Chunk buttons into 2-column rows (each row contains [원문, 요약/퀴즈])
             keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
             keyboard.append([InlineKeyboardButton("🔄 맞춤 뉴스 갱신", callback_data="news_my")])
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -832,6 +843,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "맞춤 키워드 뉴스는 <b>[🌟 맞춤 뉴스]</b> 메뉴나 아침 브리핑 발송 시 함께 포함되어 보고됩니다."
         )
         await query.message.reply_text(text, parse_mode="HTML")
+            
+    elif data.startswith("news_summarize:"):
+        art_id = int(data.split(":")[1])
+        logger.info(f"Callback news_summarize for article ID {art_id} in chat {chat_id}")
+        art = database.get_news_article_by_id(art_id)
+        if not art:
+            await query.answer(text="❌ 기사 정보를 찾을 수 없습니다.")
+            return
+        await query.answer(text="📰 기사의 본문을 분석하고 복습 퀴즈를 생성하고 있습니다...")
+        await process_url_link(update, context, chat_id, art['url'])
 
     elif data.startswith("travel_apply:"):
         plan_id = int(data.split(":")[1])
@@ -1992,7 +2013,12 @@ async def render_quiz_result(query, context, session_id: int, session_data: dict
 async def process_url_link(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: int, url: str):
     """Helper to extract content from a URL, generate summary + quiz, and display start prompt."""
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-    loading_msg = await update.message.reply_text("🔗 <b>링크를 감지했습니다. 본문을 분석하고 요약 및 퀴즈를 생성하는 중입니다...</b> ⏳", parse_mode="HTML")
+    
+    # Bug Fix: Resolve AttributeError when update.message is None during callback query
+    query = update.callback_query
+    msg_target = update.message if update.message else query.message
+    
+    loading_msg = await msg_target.reply_text("🔗 <b>링크를 감지했습니다. 본문을 분석하고 요약 및 퀴즈를 생성하는 중입니다...</b> ⏳", parse_mode="HTML")
     
     try:
         if quiz_helper.is_youtube_url(url):
@@ -2035,8 +2061,14 @@ async def process_url_link(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         keyboard = [[InlineKeyboardButton("📖 퀴즈 시작", callback_data=f"quiz_start:{session_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await loading_msg.delete()
+        # Defensive bug prevention: wrap loading message delete in try-except
+        try:
+            await loading_msg.delete()
+        except Exception:
+            pass
+            
         await send_safe_message(
+            query=query,
             update=update,
             text=text,
             reply_markup=reply_markup,
@@ -2044,7 +2076,10 @@ async def process_url_link(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         )
     except Exception as e:
         logger.error(f"Failed to process URL {url}: {e}", exc_info=True)
-        await loading_msg.edit_text(f"❌ 요약 및 퀴즈 생성에 실패했습니다: {str(e)}")
+        try:
+            await loading_msg.edit_text(f"❌ 요약 및 퀴즈 생성에 실패했습니다: {str(e)}")
+        except Exception:
+            pass
 
 def main() -> None:
     database.init_db()

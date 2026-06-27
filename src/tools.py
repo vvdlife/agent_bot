@@ -427,7 +427,37 @@ def list_google_calendar_events(time_min_str: str = None, time_max_str: str = No
     except Exception as e:
         return f"구글 캘린더 일정을 조회하는 도중 오류가 발생했습니다: {str(e)}"
 
+def normalize_iso_datetime(dt_str: str) -> str:
+    """
+    Normalizes a datetime string to ISO 8601 format (YYYY-MM-DDTHH:MM:SS) expected by Google Calendar API.
+    Handles spaces, missing seconds, timezone suffixes, and formats like YYYY-MM-DD HH:MM.
+    """
+    if not dt_str:
+        return dt_str
+        
+    dt_str = dt_str.strip()
+    
+    # 1. Replace space with T
+    if " " in dt_str and "T" not in dt_str:
+        dt_str = dt_str.replace(" ", "T")
+        
+    # 2. Add time component if just date
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', dt_str):
+        dt_str = f"{dt_str}T00:00:00"
+        
+    # 3. Add seconds if missing (e.g. YYYY-MM-DDTHH:MM)
+    match_no_seconds = re.match(r'^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})([+-]\d{2}:?\d{2}|Z)?$', dt_str)
+    if match_no_seconds:
+        date_part = match_no_seconds.group(1)
+        time_part = match_no_seconds.group(2)
+        tz_part = match_no_seconds.group(3) or ""
+        dt_str = f"{date_part}T{time_part}:00{tz_part}"
+        
+    return dt_str
+
 def create_google_calendar_event(summary: str, start_time_iso: str, end_time_iso: str, description: str = None, location: str = None) -> str:
+    start_time_iso = normalize_iso_datetime(start_time_iso)
+    end_time_iso = normalize_iso_datetime(end_time_iso)
     """
     구글 캘린더에 새로운 일정을 등록합니다.
 
@@ -786,8 +816,10 @@ def update_google_calendar_event(
         if summary:
             event['summary'] = summary
         if start_time_iso:
+            start_time_iso = normalize_iso_datetime(start_time_iso)
             event['start'] = {'dateTime': start_time_iso, 'timeZone': 'Asia/Seoul'}
         if end_time_iso:
+            end_time_iso = normalize_iso_datetime(end_time_iso)
             event['end'] = {'dateTime': end_time_iso, 'timeZone': 'Asia/Seoul'}
         if description is not None:
             event['description'] = description
@@ -937,7 +969,10 @@ def is_individual_article_url(url: str) -> bool:
     blacklist_domains = [
         'blog.naver.com', 'tistory.com', 'egloos.com', 'namu.wiki', 
         'wikipedia.org', 'wikidocs.net', 'blogspot.com', 'velog.io', 
-        'github.io', 'brunch.co.kr'
+        'github.io', 'brunch.co.kr', 'cafe.naver.com', 'cafe.daum.net',
+        'clien.net', 'dcinside.com', 'ppomppu.co.kr', 'ruliweb.com',
+        'fmkorea.com', 'inven.co.kr', 'slrclub.com', 'todayhumor.co.kr',
+        'mlbpark.donga.com'
     ]
     blacklist_patterns = [
         'news.naver.com/main/main',
@@ -981,16 +1016,40 @@ def is_individual_article_url(url: str) -> bool:
     return True
 
 
+def remove_duplicates_by_title(articles: list[dict]) -> list[dict]:
+    """Filters out duplicate articles by normalizing and checking title similarity."""
+    if not articles:
+        return []
+    seen_simplified = set()
+    unique = []
+    for art in articles:
+        title = art.get('title', '')
+        # Remove brackets like [종합], (상보), etc.
+        cleaned_title = re.sub(r'\[.*?\]|\(.*?\)', '', title)
+        # Keep only alphanumeric characters
+        simplified = "".join(c for c in cleaned_title if c.isalnum()).strip()
+        if not simplified:
+            simplified = title
+        if simplified not in seen_simplified:
+            seen_simplified.add(simplified)
+            unique.append(art)
+    return unique
+
+
 def parse_and_filter_news_results(search_res: str) -> list[dict]:
-    """Parses web_search raw output and filters for individual article URLs."""
+    """Parses web_search raw output, filters for article URLs, and removes duplicates."""
     articles = parse_news_results(search_res)
     filtered = [art for art in articles if is_individual_article_url(art['href'])]
+    filtered = remove_duplicates_by_title(filtered)
     return filtered
 
 
-async def fetch_and_filter_keyword_news(kw: str) -> list[dict]:
+async def fetch_and_filter_keyword_news(kw: str, delay: float = 0.0) -> list[dict]:
     """Helper to fetch and filter articles for a news keyword with 24h limit and 1w fallback."""
-    query_text = f"{kw} 뉴스 기사"
+    if delay > 0:
+        await asyncio.sleep(delay)
+        
+    query_text = f"{kw} 뉴스"
     loop = asyncio.get_running_loop()
     # Try 24h limit first
     search_res = await loop.run_in_executor(
@@ -998,6 +1057,17 @@ async def fetch_and_filter_keyword_news(kw: str) -> list[dict]:
         lambda: web_search(query_text, timelimit='d', max_results=20)
     )
     articles = parse_and_filter_news_results(search_res)
+    
+    # Filter sent news
+    try:
+        chat_id = current_chat_id.get()
+        if chat_id:
+            sent_urls = database.get_recent_sent_news_urls(chat_id, days_limit=3)
+            fresh_articles = [art for art in articles if art['href'].strip() not in sent_urls]
+            if fresh_articles:
+                articles = fresh_articles
+    except Exception:
+        pass
     
     # Fallback to 1 week limit if no articles
     if not articles or "No web search results found" in search_res:
@@ -1007,11 +1077,25 @@ async def fetch_and_filter_keyword_news(kw: str) -> list[dict]:
         )
         articles = parse_and_filter_news_results(search_res)
         
+        # Filter sent news
+        try:
+            chat_id = current_chat_id.get()
+            if chat_id:
+                sent_urls = database.get_recent_sent_news_urls(chat_id, days_limit=3)
+                fresh_articles = [art for art in articles if art['href'].strip() not in sent_urls]
+                if fresh_articles:
+                    articles = fresh_articles
+        except Exception:
+            pass
+        
     return articles
 
 
-async def fetch_and_filter_category_news(query_text: str) -> list[dict]:
+async def fetch_and_filter_category_news(query_text: str, delay: float = 0.0) -> list[dict]:
     """Helper to fetch and filter articles for a news category with 24h limit and 1w fallback."""
+    if delay > 0:
+        await asyncio.sleep(delay)
+        
     loop = asyncio.get_running_loop()
     # Try 24h limit first
     search_res = await loop.run_in_executor(
@@ -1020,6 +1104,17 @@ async def fetch_and_filter_category_news(query_text: str) -> list[dict]:
     )
     articles = parse_and_filter_news_results(search_res)
     
+    # Filter sent news
+    try:
+        chat_id = current_chat_id.get()
+        if chat_id:
+            sent_urls = database.get_recent_sent_news_urls(chat_id, days_limit=3)
+            fresh_articles = [art for art in articles if art['href'].strip() not in sent_urls]
+            if fresh_articles:
+                articles = fresh_articles
+    except Exception:
+        pass
+    
     # Fallback to 1 week limit if no articles
     if not articles or "No web search results found" in search_res:
         search_res = await loop.run_in_executor(
@@ -1027,6 +1122,17 @@ async def fetch_and_filter_category_news(query_text: str) -> list[dict]:
             lambda: web_search(query_text, timelimit='w', max_results=20)
         )
         articles = parse_and_filter_news_results(search_res)
+        
+        # Filter sent news
+        try:
+            chat_id = current_chat_id.get()
+            if chat_id:
+                sent_urls = database.get_recent_sent_news_urls(chat_id, days_limit=3)
+                fresh_articles = [art for art in articles if art['href'].strip() not in sent_urls]
+                if fresh_articles:
+                    articles = fresh_articles
+        except Exception:
+            pass
         
     return articles
 

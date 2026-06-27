@@ -351,6 +351,7 @@ async def check_and_send_briefings(application):
                 continue
                 
             logger.info(f"Generating Daily Briefing for chat {chat_id} (Target: {target_time_str}, Location: {location}).")
+            tools.current_chat_id.set(chat_id)
             
             # --- 3.5. D-Day 및 기념일 수집 ---
             ddays_text = "진행 중인 D-Day가 없습니다."
@@ -453,9 +454,9 @@ async def check_and_send_briefings(application):
                 
                 if keywords:
                     import src.agent as agent_module
-                    # 등록된 관심 키워드 기반 뉴스 수집 (최대 3개 키워드 비동기 동시 조회)
+                    # 등록된 관심 키워드 기반 뉴스 수집 (최대 3개 키워드 비동기 동시 조회, 백그라운드 엇갈림 딜레이 0.3초)
                     target_kws = keywords[:3]
-                    tasks_list = [tools.fetch_and_filter_keyword_news(kw) for kw in target_kws]
+                    tasks_list = [tools.fetch_and_filter_keyword_news(kw, delay=idx * 0.3) for idx, kw in enumerate(target_kws)]
                     
                     results = await asyncio.gather(*tasks_list, return_exceptions=True)
                     
@@ -487,12 +488,22 @@ async def check_and_send_briefings(application):
                         if filtered_articles:
                             # 키워드 당 최고 1개만 요약 노출해 브리핑 카드 길이 조절
                             art = filtered_articles[0]
+                            database.add_sent_news(chat_id, art['href'])
+                            art_id = database.save_news_article_cache(art['href'], art['title'], art.get('summary'))
+                            
                             title_esc = html_lib.escape(art['title'])
                             href_esc = html_lib.escape(art['href'])
-                            lines.append(f"• <b>[#{kw}]</b> <a href=\"{href_esc}\">{title_esc}</a>")
+                            summary_esc = html_lib.escape(art.get('summary') or '')
+                            summary_line = f"\n  <i>{summary_esc}</i>" if summary_esc else ""
+                            
+                            lines.append(f"• <b>[#{kw}]</b> <a href=\"{href_esc}\">{title_esc}</a>{summary_line}")
                             briefing_news_buttons.append({
                                 'label': f"🔗 [#{kw}] 원문",
                                 'url': art['href']
+                            })
+                            briefing_news_buttons.append({
+                                'label': f"📝 [#{kw}] 요약/퀴즈",
+                                'callback_data': f"news_summarize:{art_id}"
                             })
                     if lines:
                         news_text = "\n".join(lines)
@@ -502,14 +513,30 @@ async def check_and_send_briefings(application):
                     # 등록된 키워드가 없거나 결과가 없으면 일반 "오늘 주요 뉴스" 3건 수집
                     articles = await tools.fetch_and_filter_category_news("오늘 주요 뉴스 기사")
                     if articles:
+                        import src.agent as agent_module
+                        # 폴백 기사도 AI 필터링 및 요약 단계를 거치도록 적용
+                        filtered_articles = await agent_module.filter_articles_by_category_or_keyword(articles, "일반 주요 뉴스", is_category=True)
+                        if not filtered_articles:
+                            filtered_articles = articles
+                            
                         lines = []
-                        for idx, art in enumerate(articles[:3], start=1):
+                        for idx, art in enumerate(filtered_articles[:3], start=1):
+                            database.add_sent_news(chat_id, art['href'])
+                            art_id = database.save_news_article_cache(art['href'], art['title'], art.get('summary'))
+                            
                             title_esc = html_lib.escape(art['title'])
                             href_esc = html_lib.escape(art['href'])
-                            lines.append(f"• <a href=\"{href_esc}\">{title_esc}</a>")
+                            summary_esc = html_lib.escape(art.get('summary') or '')
+                            summary_line = f"\n  <i>{summary_esc}</i>" if summary_esc else ""
+                            
+                            lines.append(f"• <a href=\"{href_esc}\">{title_esc}</a>{summary_line}")
                             briefing_news_buttons.append({
                                 'label': f"🔗 주요 뉴스 #{idx} 원문",
                                 'url': art['href']
+                            })
+                            briefing_news_buttons.append({
+                                'label': f"📝 뉴스 #{idx} 요약/퀴즈",
+                                'callback_data': f"news_summarize:{art_id}"
                             })
                         news_text = "\n".join(lines)
             except Exception as ne:
@@ -566,7 +593,10 @@ async def check_and_send_briefings(application):
             if briefing_news_buttons:
                 row = []
                 for btn in briefing_news_buttons:
-                    row.append(InlineKeyboardButton(text=btn['label'], url=btn['url']))
+                    if 'callback_data' in btn:
+                        row.append(InlineKeyboardButton(text=btn['label'], callback_data=btn['callback_data']))
+                    else:
+                        row.append(InlineKeyboardButton(text=btn['label'], url=btn['url']))
                 # 가로 2열 배치 청크 분할
                 keyboard = [row[i:i + 2] for i in range(0, len(row), 2)]
             
@@ -591,8 +621,9 @@ async def check_and_send_briefings(application):
             
     try:
         database.cleanup_old_briefings(days=30)
+        database.cleanup_old_sent_news(days=30)
     except Exception as e:
-        logger.error(f"Failed to cleanup old briefings: {e}")
+        logger.error(f"Failed to cleanup old briefings or sent news: {e}")
         
     try:
         # [용량 최적화] 30일이 경과한 오래된 퀴즈 세션의 원본 본문 텍스트를 정리합니다.

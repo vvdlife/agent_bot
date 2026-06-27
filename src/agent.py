@@ -31,7 +31,7 @@ SYSTEM_INSTRUCTION = """
    - 날씨/기온 요청 시 ➡️ 반드시 `get_current_weather` 도구를 실행하세요.
    - 웹 검색 요청 시 ➡️ `web_search`를 사용하되, 검색어(query)는 명사형 핵심 키워드(예: "아이폰16 출시일", "오늘 경제 뉴스")로 압축하여 검색하세요.
    - 구글 캘린더 일정 조회 요청 시 ➡️ `list_google_calendar_events` 도구를 사용하세요.
-   - 구글 캘린더 일정 등록 요청 시 ➡️ `create_google_calendar_event` 도구를 사용하세요. 시작 및 종료 일시는 반드시 ISO 8601 포맷(예: 'YYYY-MM-DDTHH:MM:SS') 문자열 형식이어야 합니다. 사용자가 "내일 오후 3시"와 같이 상대적인 시간으로 요청하면 현재 시각(2026-06-11T11:20:00+09:00)을 기준으로 실제 날짜와 시간을 계산하여 전달하세요.
+   - 구글 캘린더 일정 등록 요청 시 ➡️ `create_google_calendar_event` 도구를 사용하세요. 시작 및 종료 일시는 반드시 ISO 8601 포맷(예: 'YYYY-MM-DDTHH:MM:SS') 문자열 형식이어야 합니다. 사용자가 "내일 오후 3시"와 같이 상대적인 시간으로 요청하면 현재 시각({current_time})을 기준으로 실제 날짜와 시간을 계산하여 전달하세요.
    - 구글 캘린더 일정 삭제 요청 시 ➡️ `delete_google_calendar_event` 도구를 사용하세요. (삭제하기 위해 먼저 일정 목록을 조회하여 event_id를 알아내야 합니다.)
    - 구글 캘린더 일정 수정 요청 시 ➡️ `update_google_calendar_event` 도구를 사용하세요. (수정하기 위해 먼저 일정 목록을 조회하여 event_id를 알아내야 합니다.)
    - 읽지 않은 지메일 메일 목록/요약 요청 시 ➡️ `list_unread_emails` 도구를 사용하세요.
@@ -48,7 +48,7 @@ SYSTEM_INSTRUCTION = """
    - 지출 내역 등록 요청 시 (예: "식비 15000원 썼어" 또는 "오늘 마트 3만원 지출") ➡️ 반드시 `add_expense_tool` 도구를 사용하세요. 지출 내역에 따라 카테고리(식비, 교통비, 쇼핑 등)를 AI가 지능적으로 매핑해야 합니다.
    - 지출 통계 및 요약 보고 요청 시 (예: "이번 달 지출 요약해줘") ➡️ `get_expense_summary_tool` 도구를 사용하세요.
    - 등록된 지출 삭제 요청 시 ➡️ `delete_expense_tool` 도구를 사용하세요.
-   - D-Day 및 기념일 등록 요청 시 ➡️ `add_dday_tool` 도구를 사용하세요. 현재 날짜가 2026-06-16T15:57:00+09:00임을 참고하여 "내일", "다음주 화요일", "10월 25일" 등의 상대적/절대적 날짜를 정확한 YYYY-MM-DD 형식으로 계산하여 전달하세요.
+   - D-Day 및 기념일 등록 요청 시 ➡️ `add_dday_tool` 도구를 사용하세요. 현재 날짜가 {current_time}임을 참고하여 "내일", "다음주 화요일", "10월 25일" 등의 상대적/절대적 날짜를 정확한 YYYY-MM-DD 형식으로 계산하여 전달하세요.
    - D-Day 및 기념일 목록 조회 요청 시 ➡️ `list_ddays_tool` 도구를 사용하세요.
    - D-Day 및 기념일 삭제 요청 시 ➡️ `delete_dday_tool` 도구를 사용하세요. (삭제하기 위해 먼저 목록을 조회하거나 사용자에게 확인해서 D-Day ID를 알아내야 합니다.)
    - 메모 저장 요청 시 ➡️ `save_note` 도구를 사용하세요.
@@ -364,8 +364,15 @@ def process_message(chat_id: int, user_message_text: str = None, file_path: str 
     ]
     
     # 3. Call Gemini API
+    import datetime
+    from datetime import timezone, timedelta
+    kst_tz = timezone(timedelta(hours=9))
+    now_kst = datetime.datetime.now(kst_tz)
+    now_str = now_kst.strftime("%Y-%m-%dT%H:%M:%S+09:00")
+    dynamic_instruction = SYSTEM_INSTRUCTION.format(current_time=now_str)
+    
     config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_INSTRUCTION,
+        system_instruction=dynamic_instruction,
         tools=available_tools,
         temperature=0.7
     )
@@ -424,31 +431,84 @@ def process_message(chat_id: int, user_message_text: str = None, file_path: str 
                 logger.warning(f"Failed to delete uploaded file from Gemini storage: {e}")
 
 
+def safe_parse_json_array(text: str) -> list:
+    """Robust parser that extracts a JSON array from LLM responses even if wrapped or formatted poorly."""
+    text = text.strip()
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for val in data.values():
+                if isinstance(val, list):
+                    return val
+    except Exception:
+        pass
+        
+    # Strip markdown code blocks
+    import re
+    cleaned = text
+    match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
+    if match:
+        cleaned = match.group(1).strip()
+        try:
+            data = json.loads(cleaned)
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                for val in data.values():
+                    if isinstance(val, list):
+                        return val
+        except Exception:
+            pass
+            
+    # Find first '[' and last ']'
+    start = text.find('[')
+    end = text.rfind(']')
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start:end+1]
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict):
+                for val in data.values():
+                    if isinstance(val, list):
+                        return val
+        except Exception:
+            pass
+            
+    raise ValueError("Failed to parse JSON array from AI response")
+
+
 async def filter_articles_by_category_or_keyword(articles: list[dict], target: str, is_category: bool = True) -> list[dict]:
     """
     Filters a list of articles using Gemini 2nd pass validation.
     Only articles strictly matching the category or keyword are returned.
+    Each returned article also includes an AI-generated 1-sentence summary.
     """
     if not articles:
         return []
         
+    # Optimize: limit Gemini input to top 10 articles to cut token size and latency by 50%
+    input_articles = articles[:10]
     client = get_agent_client()
     
     if is_category:
         prompt = (
             f"당신은 뉴스 편집 비서입니다. 아래 기사 리스트에서 오직 [{target}] 분야에만 정합하게 부합하는 기사를 최대 4개 골라내어 주세요.\n"
             f"정치 기사(예: 대통령, 국회, 정당 등)나 연예 기사는 [{target}]가 아니면 배제해야 합니다.\n"
-            f"출력은 반드시 JSON array 형식이어야 하며, 각 객체는 원래 리스트의 'title', 'href', 'body' 값을 정확히 보존해야 합니다.\n"
+            f"출력은 반드시 JSON array 형식이어야 하며, 각 객체는 원래 리스트의 'title', 'href', 'body' 값을 정확히 보존하고, 추가로 'summary' 필드에 기사의 핵심 내용을 간결하게 요약한 1문장짜리 한국어 요약(50자 내외)을 생성하여 포함해야 합니다.\n"
             f"JSON 마크다운 기호(```json)를 사용하지 말고 순수 JSON 문자열만 리턴하세요.\n\n"
-            f"기사 리스트:\n{json.dumps(articles, ensure_ascii=False)}"
+            f"기사 리스트:\n{json.dumps(input_articles, ensure_ascii=False)}"
         )
     else:
         prompt = (
             f"당신은 뉴스 편집 비서입니다. 아래 기사 리스트에서 관심 키워드인 [{target}]와(과) 실제로 밀접하게 연관된 기사만 골라내어 주세요.\n"
             f"단순히 키워드가 스니펫이나 제목에 우연히 한 번 들어갔을 뿐 기사의 주 내용이 키워드와 무관한 기사는 제외해야 합니다.\n"
-            f"출력은 반드시 JSON array 형식이어야 하며, 각 객체는 원래 리스트의 'title', 'href', 'body' 값을 정확히 보존해야 합니다.\n"
+            f"출력은 반드시 JSON array 형식이어야 하며, 각 객체는 원래 리스트의 'title', 'href', 'body' 값을 정확히 보존하고, 추가로 'summary' 필드에 기사의 핵심 내용을 간결하게 요약한 1문장짜리 한국어 요약(50자 내외)을 생성하여 포함해야 합니다.\n"
             f"JSON 마크다운 기호(```json)를 사용하지 말고 순수 JSON 문자열만 리턴하세요.\n\n"
-            f"기사 리스트:\n{json.dumps(articles, ensure_ascii=False)}"
+            f"기사 리스트:\n{json.dumps(input_articles, ensure_ascii=False)}"
         )
         
     try:
@@ -458,23 +518,14 @@ async def filter_articles_by_category_or_keyword(articles: list[dict], target: s
             None,
             lambda: client.models.generate_content(
                 model="gemini-3.5-flash",
-                contents=prompt
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
             )
         )
         
         ai_res_text = response.text.strip()
-        if ai_res_text.startswith("```"):
-            # Remove markdown fences
-            lines = ai_res_text.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].strip() == "```":
-                lines = lines[:-1]
-            ai_res_text = "\n".join(lines).strip()
-            
-        filtered_articles = json.loads(ai_res_text)
-        if isinstance(filtered_articles, list):
-            return filtered_articles
+        filtered_articles = safe_parse_json_array(ai_res_text)
+        return filtered_articles
     except Exception as e:
         logger.warning(f"Failed to filter articles with AI: {e}. Returning original articles.")
         

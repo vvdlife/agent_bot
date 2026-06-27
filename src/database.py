@@ -123,6 +123,15 @@ def init_db():
                     created_at TEXT NOT NULL
                 )
             """)
+            # Create user_sent_news table to prevent duplicate news delivery
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_sent_news (
+                    chat_id INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    sent_at TEXT NOT NULL,
+                    PRIMARY KEY (chat_id, url)
+                )
+            """)
             # Create user_expenses table for ledger feature
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS user_expenses (
@@ -683,6 +692,49 @@ def update_news_article_summary(article_id: int, summary: str):
                 "UPDATE news_articles_cache SET summary = ? WHERE id = ?",
                 (summary, article_id)
             )
+    finally:
+        conn.close()
+
+def add_sent_news(chat_id: int, url: str) -> None:
+    conn = get_db_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR IGNORE INTO user_sent_news (chat_id, url, sent_at) VALUES (?, ?, ?)",
+                (chat_id, url.strip(), datetime.now().isoformat())
+            )
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+
+def get_recent_sent_news_urls(chat_id: int, days_limit: int = 3) -> list:
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days_limit)).isoformat()
+        cursor.execute(
+            "SELECT url FROM user_sent_news WHERE chat_id = ? AND sent_at >= ?",
+            (chat_id, cutoff)
+        )
+        return [row[0] for row in cursor.fetchall()]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+def cleanup_old_sent_news(days: int = 30) -> None:
+    conn = get_db_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            from datetime import timedelta
+            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+            cursor.execute("DELETE FROM user_sent_news WHERE sent_at < ?", (cutoff,))
+    except sqlite3.Error:
+        pass
     finally:
         conn.close()
 
