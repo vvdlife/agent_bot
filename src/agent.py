@@ -273,13 +273,29 @@ def process_message(chat_id: int, user_message_text: str = None, file_path: str 
     for row in raw_history:
         try:
             content_obj = types.Content.model_validate_json(row['content'])
-            history.append(content_obj)
         except Exception:
             # Fallback if DB has raw text
-            history.append(types.Content(
+            content_obj = types.Content(
                 role=row['role'],
                 parts=[types.Part.from_text(text=row['content'])]
-            ))
+            )
+        
+        # Inject timestamp info into the first text part of the Content object to help LLM keep track of time
+        timestamp_str = row.get('timestamp')
+        if timestamp_str:
+            try:
+                dt = datetime.datetime.fromisoformat(timestamp_str)
+                formatted_ts = dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                formatted_ts = timestamp_str[:16].replace('T', ' ')
+            
+            if content_obj.parts:
+                for part in content_obj.parts:
+                    if part.text:
+                        part.text = f"[{formatted_ts}] {part.text}"
+                        break
+                        
+        history.append(content_obj)
     logger.info(f"Loaded {len(history)} messages of history context.")
     
     # Sanitize and fix the history structure to prevent role alternation/validation errors
@@ -293,7 +309,7 @@ def process_message(chat_id: int, user_message_text: str = None, file_path: str 
             logger.info(f"Uploading file {file_path} to Gemini Files API...")
             file_ref = client.files.upload(file=file_path)
             voice_instruction = (
-                "이 음성 메시지를 분석하여 다음 규칙에 따라 도구를 호출해 주세요:\n"
+                f"이 음성 메시지(수신 시각: {now_str})를 분석하여 다음 규칙에 따라 도구를 호출해 주세요:\n"
                 "1. 사용자의 의도를 분석하여 구글 캘린더(일정 등록/조회/수정/삭제), 지메일(메일 조회/발송/검색/필터), 날씨 조회, 지출 등록(add_expense_tool)/통계 조회(get_expense_summary_tool) 등 에이전트가 제공하는 모든 도구 중 가장 적합한 도구를 실행하십시오.\n"
                 "   - 만약 사용자가 돈을 썼다고 말하면(예: \"오늘 커피에 6천원 지출\"), AI가 지능적으로 카테고리를 추론하여 add_expense_tool을 호출해 주십시오.\n"
                 "2. 만약 할 일(create_local_task) 또는 메모(save_note)를 등록하는 경우, 다음 포맷 규칙을 엄격히 준수하십시오 (HTML 태그만 사용, 마크다운 금지):\n"

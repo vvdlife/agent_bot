@@ -344,7 +344,7 @@ def get_chat_history(chat_id: int, limit: int = 15) -> list:
         cursor = conn.cursor()
         # Fetch the most recent chat history for the user, in chronological order
         cursor.execute(
-            "SELECT role, content FROM (SELECT * FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
+            "SELECT role, content, timestamp FROM (SELECT * FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
             (chat_id, limit)
         )
         return [dict(row) for row in cursor.fetchall()]
