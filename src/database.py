@@ -1,6 +1,9 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from src.config import Config
+
+KST = timezone(timedelta(hours=9))
+
 
 def get_db_connection():
     conn = sqlite3.connect(Config.DATABASE_PATH)
@@ -231,7 +234,7 @@ def init_db():
 
 # Task Operations
 def add_task(title: str, description: str = None, due_date: str = None) -> int:
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -268,7 +271,7 @@ def complete_task(task_id: int) -> bool:
 
 # Note Operations
 def add_note(content: str, tags: str = None) -> int:
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -323,7 +326,7 @@ def clear_notes() -> int:
 
 # Chat Memory Operations
 def save_chat_message(chat_id: int, role: str, content: str):
-    timestamp = datetime.now().isoformat()
+    timestamp = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -349,7 +352,7 @@ def get_chat_history(chat_id: int, limit: int = 15) -> list:
         conn.close()
 
 def save_user_credentials(chat_id: int, creds_json: str):
-    updated_at = datetime.now().isoformat()
+    updated_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -410,7 +413,7 @@ def is_reminder_sent(chat_id: int, event_id: str) -> bool:
         conn.close()
 
 def save_sent_reminder(chat_id: int, event_id: str, start_time: str):
-    sent_at = datetime.now().isoformat()
+    sent_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -423,8 +426,7 @@ def save_sent_reminder(chat_id: int, event_id: str, start_time: str):
         conn.close()
 
 def cleanup_old_reminders(days: int = 1):
-    from datetime import timedelta
-    threshold = (datetime.now() - timedelta(days=days)).isoformat()
+    threshold = (datetime.now(KST) - timedelta(days=days)).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -437,7 +439,7 @@ def cleanup_old_reminders(days: int = 1):
         conn.close()
 
 def add_gmail_filter(chat_id: int, filter_type: str, value: str):
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -492,7 +494,7 @@ def is_email_alert_sent(chat_id: int, message_id: str) -> bool:
         conn.close()
 
 def save_sent_email_alert(chat_id: int, message_id: str):
-    sent_at = datetime.now().isoformat()
+    sent_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -505,8 +507,7 @@ def save_sent_email_alert(chat_id: int, message_id: str):
         conn.close()
 
 def cleanup_old_email_alerts(days: int = 7):
-    from datetime import timedelta
-    threshold = (datetime.now() - timedelta(days=days)).isoformat()
+    threshold = (datetime.now(KST) - timedelta(days=days)).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -519,7 +520,7 @@ def cleanup_old_email_alerts(days: int = 7):
         conn.close()
 
 def save_user_setting(chat_id: int, key: str, value: str):
-    updated_at = datetime.now().isoformat()
+    updated_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -578,7 +579,7 @@ def is_briefing_sent(chat_id: int, date_str: str) -> bool:
         conn.close()
 
 def save_sent_briefing(chat_id: int, date_str: str):
-    sent_at = datetime.now().isoformat()
+    sent_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -591,8 +592,7 @@ def save_sent_briefing(chat_id: int, date_str: str):
         conn.close()
 
 def cleanup_old_briefings(days: int = 30):
-    from datetime import timedelta
-    threshold = (datetime.now() - timedelta(days=days)).isoformat()
+    threshold = (datetime.now(KST) - timedelta(days=days)).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -606,7 +606,7 @@ def cleanup_old_briefings(days: int = 30):
 
 # News Operations
 def add_news_keyword(chat_id: int, keyword: str) -> bool:
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -655,7 +655,7 @@ def get_news_keywords(chat_id: int) -> list:
         conn.close()
 
 def save_news_article_cache(url: str, title: str, summary: str = None) -> int:
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -702,7 +702,7 @@ def add_sent_news(chat_id: int, url: str) -> None:
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT OR IGNORE INTO user_sent_news (chat_id, url, sent_at) VALUES (?, ?, ?)",
-                (chat_id, url.strip(), datetime.now().isoformat())
+                (chat_id, url.strip(), datetime.now(KST).isoformat())
             )
     except sqlite3.Error:
         pass
@@ -713,8 +713,7 @@ def get_recent_sent_news_urls(chat_id: int, days_limit: int = 3) -> list:
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        from datetime import timedelta
-        cutoff = (datetime.now() - timedelta(days=days_limit)).isoformat()
+        cutoff = (datetime.now(KST) - timedelta(days=days_limit)).isoformat()
         cursor.execute(
             "SELECT url FROM user_sent_news WHERE chat_id = ? AND sent_at >= ?",
             (chat_id, cutoff)
@@ -730,8 +729,7 @@ def cleanup_old_sent_news(days: int = 30) -> None:
     try:
         with conn:
             cursor = conn.cursor()
-            from datetime import timedelta
-            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+            cutoff = (datetime.now(KST) - timedelta(days=days)).isoformat()
             cursor.execute("DELETE FROM user_sent_news WHERE sent_at < ?", (cutoff,))
     except sqlite3.Error:
         pass
@@ -740,10 +738,10 @@ def cleanup_old_sent_news(days: int = 30) -> None:
 
 # Expense (Household Ledger) Operations
 def add_expense(chat_id: int, amount: int, category: str, description: str = None, spent_at: str = None) -> int:
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     if not spent_at:
         # Default to today in YYYY-MM-DD
-        spent_at = datetime.now().strftime("%Y-%m-%d")
+        spent_at = datetime.now(KST).strftime("%Y-%m-%d")
     conn = get_db_connection()
     try:
         with conn:
@@ -800,7 +798,7 @@ def get_expenses_summary(chat_id: int, start_date: str, end_date: str) -> list:
 
 # D-Day and Anniversary Operations
 def add_dday(chat_id: int, title: str, target_date: str) -> int:
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -866,7 +864,7 @@ def is_dday_alert_sent(chat_id: int, dday_id: int, alert_type: str) -> bool:
         conn.close()
 
 def save_sent_dday_alert(chat_id: int, dday_id: int, alert_type: str):
-    sent_at = datetime.now().isoformat()
+    sent_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -879,8 +877,7 @@ def save_sent_dday_alert(chat_id: int, dday_id: int, alert_type: str):
         conn.close()
 
 def cleanup_old_dday_alerts(days: int = 30):
-    from datetime import timedelta
-    threshold = (datetime.now() - timedelta(days=days)).isoformat()
+    threshold = (datetime.now(KST) - timedelta(days=days)).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -902,7 +899,7 @@ def is_weekly_report_sent(chat_id: int, report_week: str) -> bool:
         conn.close()
 
 def save_sent_weekly_report(chat_id: int, report_week: str):
-    sent_at = datetime.now().isoformat()
+    sent_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -915,8 +912,7 @@ def save_sent_weekly_report(chat_id: int, report_week: str):
         conn.close()
 
 def cleanup_old_weekly_reports(days: int = 365):
-    from datetime import timedelta
-    threshold = (datetime.now() - timedelta(days=days)).isoformat()
+    threshold = (datetime.now(KST) - timedelta(days=days)).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -930,7 +926,7 @@ def cleanup_old_weekly_reports(days: int = 365):
 
 # Travel Planner Operations
 def save_pending_travel_plan(chat_id: int, destination: str, start_date: str, end_date: str, events_json: str) -> int:
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -961,7 +957,7 @@ def create_quiz_session(chat_id: int, title: str, questions_json: str, source_co
     새로운 퀴즈 세션을 데이터베이스에 생성합니다.
     기존에 존재하던 해당 채팅방의 활성화('active')된 다른 세션들은 중복 방지를 위해 모두 'completed'로 처리합니다.
     """
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -1088,7 +1084,7 @@ def add_or_increment_incorrect_note(chat_id: int, title: str, question_text: str
     오답 노트를 생성하거나 틀린 횟수(wrong_count)를 1 증가시킵니다.
     UNIQUE(chat_id, question_text) 제약조건을 이용해 이미 존재할 경우 wrong_count만 증가하도록 처리합니다.
     """
-    created_at = datetime.now().isoformat()
+    created_at = datetime.now(KST).isoformat()
     conn = get_db_connection()
     try:
         with conn:
@@ -1199,8 +1195,7 @@ def cleanup_old_quiz_sessions(days: int = 30):
     지정된 일수(days)보다 오래된 퀴즈 세션의 원본 본문 텍스트(source_content)를 NULL 처리하여
     데이터베이스 파일 용량을 최적화합니다.
     """
-    from datetime import datetime, timedelta
-    threshold = (datetime.now() - timedelta(days=days)).isoformat()
+    threshold = (datetime.now(KST) - timedelta(days=days)).isoformat()
     conn = get_db_connection()
     try:
         with conn:

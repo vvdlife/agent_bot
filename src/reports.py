@@ -83,11 +83,22 @@ def generate_weekly_report_image(chat_id: int, start_date_str: str = None, end_d
             
         try:
             # Parse created_at (isoformat)
-            created_clean = t['created_at'].split('.')[0] # Strip milliseconds if any
-            created_dt = datetime.fromisoformat(created_clean)
+            try:
+                # Try parsing the full ISO string (with timezone and microseconds)
+                created_dt = datetime.fromisoformat(t['created_at'])
+            except ValueError:
+                # Fallback to stripping milliseconds if it fails
+                created_clean = t['created_at'].split('.')[0]
+                created_dt = datetime.fromisoformat(created_clean)
+                
             # Make timezone aware if naive
             if created_dt.tzinfo is None:
-                created_dt = created_dt.replace(tzinfo=timezone.utc).astimezone(KST)
+                # Interpret naive datetimes (e.g. from old KST logic) as KST
+                created_dt = created_dt.replace(tzinfo=KST)
+            else:
+                # Convert timezone-aware datetimes to KST
+                created_dt = created_dt.astimezone(KST)
+                
             created_date_str = created_dt.strftime("%Y-%m-%d")
             if start_date_str <= created_date_str <= end_date_str:
                 recent_tasks.append(t)

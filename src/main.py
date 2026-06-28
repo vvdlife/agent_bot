@@ -1398,7 +1398,8 @@ async def render_settings_ui(chat_id: int, update: Update = None, query = None, 
     
     # Calculate monthly expense total
     import datetime
-    today = datetime.date.today()
+    kst_tz = datetime.timezone(datetime.timedelta(hours=9))
+    today = datetime.datetime.now(kst_tz).date()
     start_date = today.replace(day=1).strftime("%Y-%m-%d")
     end_date = today.strftime("%Y-%m-%d")
     expenses = database.get_expenses(chat_id, start_date, end_date)

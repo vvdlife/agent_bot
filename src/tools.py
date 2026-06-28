@@ -204,7 +204,8 @@ def get_expense_summary_tool(start_date: str = None, end_date: str = None) -> st
         A formatted summary report listing category-wise expense breakdown, total expenditure, and percentages.
     """
     import datetime
-    today = datetime.date.today()
+    kst_tz = datetime.timezone(datetime.timedelta(hours=9))
+    today = datetime.datetime.now(kst_tz).date()
     if not start_date:
         start_date = today.replace(day=1).strftime("%Y-%m-%d")
     if not end_date:
@@ -380,7 +381,7 @@ def list_google_calendar_events(time_min_str: str = None, time_max_str: str = No
         service = build('calendar', 'v3', credentials=creds)
 
         if not time_min_str:
-            time_min_str = datetime.datetime.utcnow().isoformat() + 'Z'
+            time_min_str = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
 
         events_result = service.events().list(
             calendarId='primary',
