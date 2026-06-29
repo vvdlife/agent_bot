@@ -253,14 +253,14 @@ def get_expense_summary_tool(start_date: str = None, end_date: str = None) -> st
         
     return "\n".join(lines)
 
-def web_search(query: str, timelimit: str = None, max_results: int = 10) -> str:
+def web_search(query: str, timelimit: str = None, max_results: int = 4) -> str:
     """
     Searches the web for current, real-time information, news, or general knowledge.
 
     Args:
         query: The search term or question to query (e.g., 'weather in Seoul today', 'latest tech news'). This is required.
         timelimit: Optional time limit for search ('d' for day, 'w' for week, 'm' for month, 'y' for year).
-        max_results: Optional maximum number of results to return. Default is 10.
+        max_results: Optional maximum number of results to return. Default is 4.
 
     Returns:
         A formatted string of search results including titles, links, and snippets.
@@ -275,7 +275,10 @@ def web_search(query: str, timelimit: str = None, max_results: int = 10) -> str:
             
             lines = []
             for r in results:
-                lines.append(f"Title: {r['title']}\nLink: {r['href']}\nSnippet: {r['body']}\n")
+                body = r.get('body', '')
+                if len(body) > 250:
+                    body = body[:250] + "..."
+                lines.append(f"Title: {r['title']}\nLink: {r['href']}\nSnippet: {body}\n")
             return "\n".join(lines)
     except Exception as e:
         return f"Error during web search: {str(e)}"
@@ -934,8 +937,8 @@ def fetch_news_article_text(url: str) -> str:
         # Filter out very short lines (often layout remnants) and merge
         text = "\n".join(chunk for chunk in chunks if len(chunk) > 20)
         
-        # Limit text length to around 3000 chars for LLM safety
-        return text[:3000].strip()
+        # Limit text length to around 2000 chars for LLM safety and cost reduction
+        return text[:2000].strip()
         
     except Exception as e:
         raise e
@@ -1055,7 +1058,7 @@ async def fetch_and_filter_keyword_news(kw: str, delay: float = 0.0) -> list[dic
     # Try 24h limit first
     search_res = await loop.run_in_executor(
         None,
-        lambda: web_search(query_text, timelimit='d', max_results=20)
+        lambda: web_search(query_text, timelimit='d', max_results=5)
     )
     articles = parse_and_filter_news_results(search_res)
     
@@ -1074,7 +1077,7 @@ async def fetch_and_filter_keyword_news(kw: str, delay: float = 0.0) -> list[dic
     if not articles or "No web search results found" in search_res:
         search_res = await loop.run_in_executor(
             None,
-            lambda: web_search(query_text, timelimit='w', max_results=20)
+            lambda: web_search(query_text, timelimit='w', max_results=5)
         )
         articles = parse_and_filter_news_results(search_res)
         
@@ -1101,7 +1104,7 @@ async def fetch_and_filter_category_news(query_text: str, delay: float = 0.0) ->
     # Try 24h limit first
     search_res = await loop.run_in_executor(
         None,
-        lambda: web_search(query_text, timelimit='d', max_results=20)
+        lambda: web_search(query_text, timelimit='d', max_results=5)
     )
     articles = parse_and_filter_news_results(search_res)
     
@@ -1120,7 +1123,7 @@ async def fetch_and_filter_category_news(query_text: str, delay: float = 0.0) ->
     if not articles or "No web search results found" in search_res:
         search_res = await loop.run_in_executor(
             None,
-            lambda: web_search(query_text, timelimit='w', max_results=20)
+            lambda: web_search(query_text, timelimit='w', max_results=5)
         )
         articles = parse_and_filter_news_results(search_res)
         

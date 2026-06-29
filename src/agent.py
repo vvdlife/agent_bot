@@ -247,6 +247,18 @@ def clean_chat_history(history: list[types.Content]) -> list[types.Content]:
             
     return clean_history
 
+def truncate_large_values(data, max_len=1000):
+    """Recursively truncates strings longer than max_len in a dict, list, or string to save tokens."""
+    if isinstance(data, str):
+        if len(data) > max_len:
+            return data[:max_len] + "\n...[중략: 내용이 너무 길어 토큰 절감을 위해 잘렸습니다]..."
+        return data
+    elif isinstance(data, dict):
+        return {k: truncate_large_values(v, max_len) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [truncate_large_values(item, max_len) for item in data]
+    return data
+
 def process_message(chat_id: int, user_message_text: str = None, file_path: str = None, mime_type: str = None) -> tuple[str, list[str]]:
     # Set context variables for tools
     tools.current_chat_id.set(chat_id)
@@ -268,7 +280,7 @@ def process_message(chat_id: int, user_message_text: str = None, file_path: str 
     logger.info(f"Saved user message in database history.")
     
     # 2. Load recent conversation history for context
-    raw_history = database.get_chat_history(chat_id, limit=20)
+    raw_history = database.get_chat_history(chat_id, limit=10)
     history = []
     for row in raw_history:
         try:
@@ -415,6 +427,9 @@ def process_message(chat_id: int, user_message_text: str = None, file_path: str 
                         tools_executed.append(part.function_call.name)
                     elif part.function_response:
                         logger.info(f"  [Tool Response] Name: '{part.function_response.name}', Result: {part.function_response.response}")
+                        # Truncate large tool responses before saving to database to prevent history token inflation
+                        if part.function_response.response:
+                            part.function_response.response = truncate_large_values(part.function_response.response)
                 database.save_chat_message(chat_id, content.role, content.model_dump_json())
             # Save the final text response from the model to maintain strict role alternation
             if response.candidates and len(response.candidates) > 0:
@@ -506,8 +521,8 @@ async def filter_articles_by_category_or_keyword(articles: list[dict], target: s
     if not articles:
         return []
         
-    # Optimize: limit Gemini input to top 10 articles to cut token size and latency by 50%
-    input_articles = articles[:10]
+    # Optimize: limit Gemini input to top 3 articles to cut token size and latency significantly
+    input_articles = articles[:3]
     client = get_agent_client()
     
     if is_category:

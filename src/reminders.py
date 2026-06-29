@@ -470,7 +470,8 @@ async def check_and_send_briefings(application):
                         if isinstance(res, Exception) or not res:
                             filter_tasks.append(dummy_empty())
                             continue
-                        filter_tasks.append(agent_module.filter_articles_by_category_or_keyword(res, kw, is_category=False))
+                        # Slice keyword articles to top 3 before passing to AI filtering
+                        filter_tasks.append(agent_module.filter_articles_by_category_or_keyword(res[:3], kw, is_category=False))
                         
                     filtered_results = await asyncio.gather(*filter_tasks, return_exceptions=True)
                     
@@ -514,10 +515,10 @@ async def check_and_send_briefings(application):
                     articles = await tools.fetch_and_filter_category_news("오늘 주요 뉴스 기사")
                     if articles:
                         import src.agent as agent_module
-                        # 폴백 기사도 AI 필터링 및 요약 단계를 거치도록 적용
-                        filtered_articles = await agent_module.filter_articles_by_category_or_keyword(articles, "일반 주요 뉴스", is_category=True)
+                        # 폴백 기사도 상위 3개만 AI 필터링 및 요약 단계를 거치도록 적용
+                        filtered_articles = await agent_module.filter_articles_by_category_or_keyword(articles[:3], "일반 주요 뉴스", is_category=True)
                         if not filtered_articles:
-                            filtered_articles = articles
+                            filtered_articles = articles[:3]
                             
                         lines = []
                         for idx, art in enumerate(filtered_articles[:3], start=1):
